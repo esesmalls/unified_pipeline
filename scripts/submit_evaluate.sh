@@ -58,6 +58,9 @@ METRICS="${METRICS:-W-MAE W-RMSE}"
 SAVE_DIFF="${SAVE_DIFF:-0}"
 SAVE_DIFF_NC="${SAVE_DIFF_NC:-0}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"              # 空=使用默认路径
+# Slurm 将批处理脚本复制到 spool（$0 常为 .../slurm_script），不代表仓库路径
+SCRIPT_PATH="${UNIFIED_ROOT}/scripts/submit_evaluate.sh"
+PY_ENTRY="${UNIFIED_ROOT}/run_evaluate.py"
 
 # ---- 打印运行信息 ----
 echo "=========================================="
@@ -65,9 +68,16 @@ echo "[info] job=${SLURM_JOB_ID:-local}"
 echo "[info] date=$(date)"
 echo "[info] conda_env=${CONDA_ENV}"
 echo "[info] dtk_version=${DTK_VERSION:-none}"
+echo "[info] submit_script=${SCRIPT_PATH}"
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  echo "[info] slurm_batch_copy=$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  echo "[info] slurm_submit_dir=${SLURM_SUBMIT_DIR:-n/a}"
+fi
+echo "[info] python_entry=${PY_ENTRY}"
 echo "[info] time_tag=${TIME_TAG}"
 echo "[info] models=${MODELS}"
 echo "[info] variables=${VARIABLES}"
+echo "[info] step_interval=${STEP_INTERVAL} expected_steps=${EXPECTED_STEPS}"
 echo "=========================================="
 
 # ==============================================================
@@ -148,5 +158,7 @@ if [ -n "${OUTPUT_DIR}" ]; then
 fi
 
 echo "[info] 开始时间: $(date)"
-python "${UNIFIED_ROOT}/run_evaluate.py" "${ARGS[@]}"
+echo "[info] ENV snapshot: TIME_TAG=${TIME_TAG} MODELS=${MODELS} VARIABLES=${VARIABLES} PRED_BASE_DIR=${PRED_BASE_DIR} ERA5_DIR=${ERA5_DIR} STEP_INTERVAL=${STEP_INTERVAL} EXPECTED_STEPS=${EXPECTED_STEPS}"
+echo "[info] CMD: python ${PY_ENTRY} ${ARGS[*]}"
+python "${PY_ENTRY}" "${ARGS[@]}"
 echo "[info] 完成时间: $(date)"

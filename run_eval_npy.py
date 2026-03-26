@@ -65,6 +65,22 @@ def _npy_path(
     return output_root / display_name / "ERA5_6H" / fname
 
 
+def _load_pred_stack(path: Path, n_steps: int, h: int, w: int) -> np.ndarray:
+    """
+    Backward-compatible loader for prediction stacks:
+    - standard .npy files (preferred)
+    - legacy raw float32 memmap files (no .npy header)
+    """
+    try:
+        arr = np.load(str(path), mmap_mode="r")
+    except ValueError:
+        arr = np.memmap(str(path), dtype=np.float32, mode="r", shape=(n_steps, h, w))
+    arr = np.asarray(arr, dtype=np.float32)
+    if arr.ndim == 2:
+        arr = arr[np.newaxis, ...]
+    return arr
+
+
 def run_eval_from_npy(
     *,
     output_root: Path,
@@ -119,10 +135,12 @@ def run_eval_from_npy(
                 if not pth.is_file():
                     print(f"[eval_npy] 跳过缺失文件: {pth}", flush=True)
                     continue
-                arr = np.load(str(pth), mmap_mode="r")
-                arr = np.asarray(arr, dtype=np.float32)
-                if arr.ndim == 2:
-                    arr = arr[np.newaxis, ...]
+                arr = _load_pred_stack(
+                    pth,
+                    n_steps=n_steps,
+                    h=len(lat),
+                    w=len(lon),
+                )
                 pred_stacks[(disp, var)] = arr
 
         for si, current_lead in enumerate(leads):

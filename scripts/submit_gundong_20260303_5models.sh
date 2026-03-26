@@ -2,6 +2,9 @@
 # 2026-03-03 12Z：五模型 verify + rolling（含评估）。请在 unified_pipeline 目录下执行。
 set -euo pipefail
 
+echo "[warn] DEPRECATED: 推荐直接使用 submit_verify.sh / submit_rolling.sh / submit_evaluate.sh 并通过环境变量传参。"
+echo "[warn] 此脚本仅保留兼容历史流程，不建议新任务继续使用。"
+
 UNIFIED_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${UNIFIED_ROOT}"
 

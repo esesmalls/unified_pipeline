@@ -67,6 +67,13 @@ class GraphCastModel(WeatherModel):
             channel_indices = list(range(len(model_cfg.channels)))
 
         stats_dir = Path(cfg.get("stats_dir", str(_GRAPH_ROOT / "graphcast_model/stats")))
+        static_dir = Path(cfg.get("static_dir", str(_GRAPH_ROOT / "graphcast_model/static")))
+        ckpt_path = Path(cfg.get("checkpoint", str(_GRAPH_ROOT / "graphcast_model/graphcast_finetune.pth")))
+        print(f"[GraphCast] model_config={model_config}", flush=True)
+        print(f"[GraphCast] checkpoint={ckpt_path}", flush=True)
+        print(f"[GraphCast] stats_dir={stats_dir}", flush=True)
+        print(f"[GraphCast] static_dir={static_dir}", flush=True)
+        print(f"[GraphCast] metadata_json={metadata_json}", flush=True)
         mu_full = np.load(stats_dir / "global_means.npy")
         sd_full = np.load(stats_dir / "global_stds.npy")
         self._mu = mu_full[0, channel_indices, 0, 0].astype(np.float32)
@@ -106,14 +113,20 @@ class GraphCastModel(WeatherModel):
         model.set_checkpoint_encoder(model_cfg.checkpoint_encoder)
         model.set_checkpoint_decoder(model_cfg.checkpoint_decoder)
 
-        ckpt_path = Path(cfg.get("checkpoint", str(_GRAPH_ROOT / "graphcast_model/graphcast_finetune.pth")))
         ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=True)
-        model.load_state_dict(ckpt["model_state_dict"])
+        if isinstance(ckpt, dict):
+            print(f"[GraphCast] checkpoint keys={list(ckpt.keys())[:12]}", flush=True)
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            state_dict = ckpt["model_state_dict"]
+            print("[GraphCast] using key: model_state_dict", flush=True)
+        else:
+            state_dict = ckpt
+            print("[GraphCast] using checkpoint as raw state_dict", flush=True)
+        model.load_state_dict(state_dict)
         model = model.to(dtype=torch.float32).to(device)
         model.eval()
         self._model = model
 
-        static_dir = cfg.get("static_dir", str(_GRAPH_ROOT / "graphcast_model/static"))
         self._static_data = StaticData(static_dir, model.latitudes, model.longitudes).get().to(
             device=device, dtype=torch.float32
         )

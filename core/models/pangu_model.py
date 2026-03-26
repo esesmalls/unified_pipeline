@@ -36,9 +36,16 @@ class PanguModel(WeatherModel):
         self._sessions: Dict[str, Any] = {}
         self._loaded = False
         self._step_h = 6
+        self._scheduler_mode = "hybrid_24h"
 
     def load(self, cfg: Dict, device: Any = "auto") -> None:
         paths = cfg.get("paths", {})
+        self._scheduler_mode = str(cfg.get("scheduler_mode", "hybrid_24h")).strip().lower()
+        if self._scheduler_mode not in ("hybrid_24h", "six_hour_only"):
+            raise ValueError(
+                f"Pangu: 非法 scheduler_mode={self._scheduler_mode}，"
+                "仅支持 hybrid_24h | six_hour_only"
+            )
         providers = pick_providers(str(device) if not isinstance(device, str) else device)
         for key, p_str in paths.items():
             p = Path(p_str)
@@ -48,6 +55,7 @@ class PanguModel(WeatherModel):
             raise FileNotFoundError("Pangu: 找不到 pangu_weather_6.onnx，请检查 config/models.yaml 路径")
         for key, sess in self._sessions.items():
             log_ort_session(f"Pangu/{key}", sess)
+        print(f"[Pangu] scheduler_mode={self._scheduler_mode}", flush=True)
         self._loaded = True
 
     def init_state(
@@ -65,9 +73,19 @@ class PanguModel(WeatherModel):
 
     def step(self, state: ModelState) -> ModelState:
         next_lead = state.lead + self._step_h
-        # 选择 ONNX：next_lead 能被 24 整除 → 24h 模型
-        use_24 = (next_lead % 24 == 0) and ("24h" in self._sessions)
-        sess = self._sessions["24h"] if use_24 else self._sessions["6h"]
+        # 可配置策略：
+        # - six_hour_only: 永远使用 6h
+        # - hybrid_24h:    +24h/+48h/... 使用 24h
+        use_24 = (
+            self._scheduler_mode == "hybrid_24h"
+            and (next_lead % 24 == 0)
+            and ("24h" in self._sessions)
+        )
+        sess_key = "24h" if use_24 else "6h"
+        sess = self._sessions[sess_key]
+        # 仅首步与「第一次」到达 +24h 预报时效时各打一行，不在 48h/72h/... 重复打
+        if next_lead == self._step_h or next_lead == 24:
+            print(f"[Pangu] lead={next_lead}h uses {sess_key}", flush=True)
 
         p_new, s_new = pangu_one_step(sess, state.data["p"], state.data["s"])
         blob_new = pangu_onnx_to_blob(p_new, s_new)

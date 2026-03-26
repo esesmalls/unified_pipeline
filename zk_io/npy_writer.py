@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
+from numpy.lib.format import open_memmap
 
 
 class NpyStackWriter:
@@ -57,7 +58,9 @@ class NpyStackWriter:
                 else f"{var}_{init_tag}.npy"
             )
             path = base / fname
-            mm = np.memmap(
+            # Use NumPy's .npy-aware memmap writer so outputs are standards-compliant
+            # and can be loaded by np.load(..., mmap_mode="r") in evaluation scripts.
+            mm = open_memmap(
                 str(path),
                 dtype=np.float32,
                 mode="w+",

@@ -50,6 +50,9 @@ PRESSURE_VARS="${PRESSURE_VARS:-z:1000 t:1000}"   # 气压层变量（空=不出
 DEVICE="${DEVICE:-auto}"
 SKIP_PLOTS="${SKIP_PLOTS:-0}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ZK_ROOT}/results/verify}"
+# Slurm 将批处理脚本复制到 spool（$0 常为 .../slurm_script），不代表仓库路径
+SCRIPT_PATH="${UNIFIED_ROOT}/scripts/submit_verify.sh"
+PY_ENTRY="${UNIFIED_ROOT}/run_verify.py"
 
 # ---- 打印运行信息 ----
 echo "=========================================="
@@ -57,10 +60,20 @@ echo "[info] job=${SLURM_JOB_ID:-local}"
 echo "[info] date=$(date)"
 echo "[info] conda_env=${CONDA_ENV}"
 echo "[info] dtk_version=${DTK_VERSION:-none}"
+echo "[info] submit_script=${SCRIPT_PATH}"
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  echo "[info] slurm_batch_copy=$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  echo "[info] slurm_submit_dir=${SLURM_SUBMIT_DIR:-n/a}"
+fi
+echo "[info] python_entry=${PY_ENTRY}"
 echo "[info] models=${MODELS}"
 echo "[info] data_source=${DATA_SOURCE}"
 echo "[info] date=${DATE}  hour=${HOUR}"
 echo "[info] num_steps=${NUM_STEPS}"
+echo "[info] lead_step=n/a (verify pipeline)"
+echo "[info] max_lead=n/a (verify pipeline)"
+echo "[info] world_size=n/a (verify pipeline)"
+echo "[info] parallel_mode=n/a (verify pipeline)"
 echo "[info] output=${OUTPUT_ROOT}"
 echo "=========================================="
 
@@ -167,9 +180,10 @@ if [ "${SKIP_PLOTS}" = "1" ]; then
     ARGS+=(--skip-plots)
 fi
 
-echo "[info] CMD: python ${UNIFIED_ROOT}/run_verify.py ${ARGS[*]}"
+echo "[info] ENV snapshot: MODELS=${MODELS} DATA_SOURCE=${DATA_SOURCE} DATE=${DATE} HOUR=${HOUR} NUM_STEPS=${NUM_STEPS} DEVICE=${DEVICE} SKIP_PLOTS=${SKIP_PLOTS}"
+echo "[info] CMD: python ${PY_ENTRY} ${ARGS[*]}"
 echo "[info] 开始时间: $(date)"
 
-python "${UNIFIED_ROOT}/run_verify.py" "${ARGS[@]}"
+python "${PY_ENTRY}" "${ARGS[@]}"
 
 echo "[info] 完成时间: $(date)"

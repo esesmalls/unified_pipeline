@@ -231,6 +231,11 @@ def run_rolling(
         model = registry.get(model_name)
         sfc_vars = variables if variables else model.get_surface_var_names()
         step_h = model.get_step_hours()
+        if lead_step % step_h != 0:
+            raise ValueError(
+                f"[{display_name}] lead_step={lead_step}h 不能被模型步长 {step_h}h 整除。"
+                "请调整 --lead-step 或模型配置。"
+            )
         is_pangu = model_name.lower() == "pangu"
 
         try:
@@ -245,7 +250,7 @@ def run_rolling(
                     _progress(f"[{display_name}] 跳过 {init_tag}：{e}")
                     continue
 
-                prev_dt = init_dt - timedelta(hours=lead_step)
+                prev_dt = init_dt - timedelta(hours=step_h)
                 prev_blob = adapter.load_blob_safe(prev_dt.strftime("%Y%m%d"), prev_dt.hour)
 
                 lat = init_blob.get("lat", np.linspace(90.0, -90.0, 721, dtype=np.float32))

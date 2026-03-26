@@ -70,6 +70,24 @@ def _npy_path(pred_base: Path, model: str, var: str, time_tag: str, pangu: bool)
     return pred_base / model / "ERA5_6H" / fname
 
 
+def _load_pred_stack(path: Path, expected_steps: int, h: int, w: int) -> np.ndarray:
+    """
+    Load prediction stack with backward compatibility:
+    - New files: standard .npy (np.load)
+    - Legacy files: raw float32 memmap written without .npy header
+    """
+    try:
+        arr = np.load(str(path), mmap_mode="r")
+    except ValueError:
+        arr = np.memmap(str(path), dtype=np.float32, mode="r", shape=(expected_steps, h, w))
+    arr = np.asarray(arr).squeeze()
+    if arr.ndim > 3:
+        arr = arr[0]
+    if arr.ndim == 2:
+        arr = arr[np.newaxis]
+    return arr
+
+
 def main():
     defaults = _load_defaults()
     e_defaults = defaults.get("evaluation", {})
@@ -188,11 +206,12 @@ def main():
                 _progress(f"  跳过（找不到文件）: {npy_path}")
                 continue
 
-            pred_data = np.load(str(npy_path)).squeeze()
-            if pred_data.ndim > 3:
-                pred_data = pred_data[0]
-            if pred_data.ndim == 2:
-                pred_data = pred_data[np.newaxis]
+            pred_data = _load_pred_stack(
+                npy_path,
+                expected_steps=args.expected_steps,
+                h=len(lats),
+                w=len(lons),
+            )
 
             vt_list = []
 

@@ -86,6 +86,9 @@ METRICS="${METRICS:-W-MAE W-RMSE}"
 #   model — 单日任务：1天 × 4模型 × WORLD_SIZE=4 → 每卡 1 个模型
 WORLD_SIZE="${WORLD_SIZE:-1}"
 PARALLEL_MODE="${PARALLEL_MODE:-auto}"
+# Slurm 将批处理脚本复制到 spool（$0 常为 .../slurm_script），不代表仓库路径
+SCRIPT_PATH="${UNIFIED_ROOT}/scripts/submit_rolling.sh"
+PY_ENTRY="${UNIFIED_ROOT}/run_rolling.py"
 
 # ---- DCU / CPU 说明（Slurm 配额）----
 # 逐模型串行 + WORLD_SIZE=1 时，同一时间只有 1 张 DCU 在跑推理，其余卡空闲属正常；
@@ -101,6 +104,12 @@ echo "[info] job=${SLURM_JOB_ID:-local}"
 echo "[info] date=$(date)"
 echo "[info] conda_env=${CONDA_ENV}"
 echo "[info] dtk_version=${DTK_VERSION:-none}"
+echo "[info] submit_script=${SCRIPT_PATH}"
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  echo "[info] slurm_batch_copy=$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  echo "[info] slurm_submit_dir=${SLURM_SUBMIT_DIR:-n/a}"
+fi
+echo "[info] python_entry=${PY_ENTRY}"
 echo "[info] models=${MODELS}"
 echo "[info] data_source=${DATA_SOURCE}"
 echo "[info] date_range=${DATE_RANGE}"
@@ -217,6 +226,8 @@ fi
 ARGS+=(--parallel-mode "${PARALLEL_MODE}")
 
 echo "[info] parallel_mode=${PARALLEL_MODE}  world_size=${WORLD_SIZE}"
+echo "[info] ENV snapshot: MODELS=${MODELS} DATA_SOURCE=${DATA_SOURCE} DATE_RANGE=${DATE_RANGE} INIT_HOUR=${INIT_HOUR} LEAD_STEP=${LEAD_STEP} MAX_LEAD=${MAX_LEAD} WORLD_SIZE=${WORLD_SIZE} PARALLEL_MODE=${PARALLEL_MODE} ENABLE_EVAL=${ENABLE_EVAL}"
+echo "[info] CMD(base): python ${PY_ENTRY} ${ARGS[*]}"
 echo "[info] 开始时间: $(date)"
 
 if [ "${WORLD_SIZE}" -gt "1" ]; then
@@ -224,9 +235,9 @@ if [ "${WORLD_SIZE}" -gt "1" ]; then
     torchrun \
         --nproc_per_node="${WORLD_SIZE}" \
         --master_port=29500 \
-        "${UNIFIED_ROOT}/run_rolling.py" "${ARGS[@]}"
+        "${PY_ENTRY}" "${ARGS[@]}"
 else
-    python "${UNIFIED_ROOT}/run_rolling.py" "${ARGS[@]}"
+    python "${PY_ENTRY}" "${ARGS[@]}"
 fi
 
 echo "[info] 完成时间: $(date)"
