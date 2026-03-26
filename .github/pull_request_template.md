@@ -13,6 +13,7 @@
 - [ ] Lint passed
 - [ ] Smoke test passed
 - [ ] Relevant script-level checks passed
+- [ ] README/USAGE updated for behavior/config/CLI/output changes, or marked N/A with reason
 
 Validation commands and key outputs:
 
@@ -32,4 +33,5 @@ Validation commands and key outputs:
 - [ ] No direct `main` push
 - [ ] Commits are small and readable
 - [ ] Required checks are passing
+- [ ] Docs sync requirement satisfied (`README.md` / `USAGE.txt` or explicit N/A reason)
 

@@ -14,6 +14,7 @@ This repository enforces a branch-first workflow for all feature work by any age
 5. Each commit must be validated before commit (lint/smoke tests relevant to touched files).
 6. Open a Pull Request to `main` after pushing branch.
 7. Merge to `main` is allowed only after required checks and review approval.
+8. Any behavior/config/CLI/output-path change must update `README.md` (and `USAGE.txt` when command usage changes), or explicitly justify `N/A` in PR.
 
 ## Commit and Push Pattern
 
