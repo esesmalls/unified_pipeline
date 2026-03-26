@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -528,6 +529,20 @@ def fuxi_temb(lead_hours: int) -> np.ndarray:
         ang = h / 24.0 * w * np.float32(np.pi)
         xs.extend([np.sin(ang), np.cos(ang)])
     return np.array(xs, dtype=np.float32)[np.newaxis, :]
+
+
+def fuxi_temb_zforecast_style(init_dt: datetime, step_idx: int) -> np.ndarray:
+    """
+    zforecast 风格 FuXi temb：
+    对 [step_idx-1, step_idx, step_idx+1] 三个 6h 时刻编码 dayofyear/hour，
+    再做 sin/cos 展开，输出形状 (1, 12)。
+    """
+    points = []
+    for t in (step_idx - 1, step_idx, step_idx + 1):
+        dt = init_dt + timedelta(hours=t * 6)
+        points.extend([dt.timetuple().tm_yday / 366.0, dt.hour / 24.0])
+    base = np.asarray(points, dtype=np.float32)
+    return np.concatenate([np.sin(base), np.cos(base)], axis=0)[np.newaxis, :]
 
 
 def run_fengwu(

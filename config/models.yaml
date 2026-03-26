@@ -19,6 +19,10 @@ models:
     # 地表变量输出顺序（ONNX output_surface 通道顺序）
     surface_channels: ["msl", "u10", "v10", "t2m"]
     pressure_channels: ["z", "q", "t", "u", "v"]
+    # 调度策略：
+    #   six_hour_only: 强制仅使用 6h 模型（用于和历史脚本对齐复核）
+    #   hybrid_24h:    +24h/+48h/... 使用 24h 模型，其余使用 6h
+    scheduler_mode: "six_hour_only"
 
   fengwu:
     enabled: true
@@ -42,7 +46,13 @@ models:
     paths:
       short:  "${ZK_ROOT}/fuxi/short.onnx"
       medium: "${ZK_ROOT}/fuxi/medium.onnx"
+      # 预留：后续接入 long 级联
+      long: "${ZK_ROOT}/fuxi/long.onnx"
     default_version: short
+    infer_mode: cascade           # cascade | fixed
+    cascade_split_step: 20        # short -> medium 的分界步（1-based）
+    temb_mode: zforecast          # zforecast | legacy
+    tp_fallback: zero             # zero | error
     # FuXi 70 通道：Z13,T13,U13,V13,R13（FUXI_LEVELS 50→1000），然后 T2M(65),U10(66),V10(67),MSL(68),TP(69)
     surface_channels: ["t2m", "u10", "v10", "msl"]
     surface_indices:  [65, 66, 67, 68]
@@ -54,7 +64,7 @@ models:
     # config.yaml 里包含 channels、img_size、mesh_level 等所有构图参数
     model_config: "${GRAPH_ROOT}/conf/config.yaml"
     model_config_key: "model"
-    checkpoint: "${GRAPH_ROOT}/graphcast_model/graphcast_finetune.pth"
+    checkpoint: "/public/home/aciwgvx1jd/newh5/checkpoints/graphcast.pth"
     stats_dir: "${GRAPH_ROOT}/graphcast_model/stats"     # global_means.npy / global_stds.npy
     static_dir: "${GRAPH_ROOT}/graphcast_model/static"
     metadata_json: "${GRAPH_ROOT}/graphcast_model/metadata.json"

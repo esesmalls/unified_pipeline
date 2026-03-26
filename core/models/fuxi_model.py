@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from .base_model import ModelState, WeatherModel
-from ..data.channel_mapper import blobs_to_fuxi_2frame, blob_to_fuxi_70ch
+from ..data.channel_mapper import blobs_to_fuxi_2frame
 
 _ZK_ROOT = Path(__file__).resolve().parents[2]
 if str(_ZK_ROOT) not in sys.path:
@@ -23,6 +23,7 @@ from infer_cepri_onnx import (  # noqa: E402
     create_session,
     fuxi_prepare_onnx_input,
     fuxi_temb,
+    fuxi_temb_zforecast_style,
     log_ort_session,
     pick_providers,
 )
@@ -37,20 +38,43 @@ class FuXiModel(WeatherModel):
 
     def __init__(self):
         self._sess = None
+        self._sessions: Dict[str, Any] = {}
         self._layout: Optional[str] = None
         self._loaded = False
         self._step_h = 6
+        self._infer_mode = "cascade"
+        self._split_step = 20
+        self._temb_mode = "zforecast"
+        self._fixed_version = "short"
+        self._tp_fallback = "zero"
 
     def load(self, cfg: Dict, device: Any = "auto") -> None:
         version = cfg.get("default_version", "short")
         paths = cfg.get("paths", {})
-        onnx_path = Path(paths.get(version, paths.get("short", "")))
-        if not onnx_path.is_file():
-            raise FileNotFoundError(f"FuXi: 找不到 ONNX 文件 {onnx_path}")
-
+        self._infer_mode = str(cfg.get("infer_mode", "cascade")).strip().lower()
+        self._split_step = int(cfg.get("cascade_split_step", 20))
+        self._temb_mode = str(cfg.get("temb_mode", "zforecast")).strip().lower()
+        self._fixed_version = str(version).strip().lower()
+        self._tp_fallback = str(cfg.get("tp_fallback", "zero")).strip().lower()
         providers = pick_providers(str(device) if not isinstance(device, str) else device)
-        self._sess = create_session(onnx_path, providers)
-        log_ort_session("FuXi", self._sess)
+        self._sessions = {}
+
+        if self._infer_mode == "cascade":
+            for name in ("short", "medium"):
+                onnx_path = Path(paths.get(name, ""))
+                if not onnx_path.is_file():
+                    raise FileNotFoundError(f"FuXi(cascade): 找不到 {name} ONNX 文件 {onnx_path}")
+                sess = create_session(onnx_path, providers)
+                self._sessions[name] = sess
+                log_ort_session(f"FuXi/{name}", sess)
+            self._sess = self._sessions["short"]
+        else:
+            onnx_path = Path(paths.get(self._fixed_version, paths.get("short", "")))
+            if not onnx_path.is_file():
+                raise FileNotFoundError(f"FuXi: 找不到 ONNX 文件 {onnx_path}")
+            self._sess = create_session(onnx_path, providers)
+            self._sessions[self._fixed_version] = self._sess
+            log_ort_session(f"FuXi/{self._fixed_version}", self._sess)
         self._loaded = True
 
     def init_state(
@@ -61,28 +85,56 @@ class FuXiModel(WeatherModel):
     ) -> ModelState:
         if prev_blob is None:
             raise ValueError("FuXi 需要 prev_blob（t-6h 历史帧）")
-        raw = blobs_to_fuxi_2frame(prev_blob, init_blob)  # (2, 70, H, W)
+        raw = blobs_to_fuxi_2frame(
+            prev_blob,
+            init_blob,
+            tp_fill=0.0,
+            tp_fallback=self._tp_fallback,
+        )  # (2, 70, H, W)
         x, layout = fuxi_prepare_onnx_input(raw, self._sess)
         self._layout = layout
         return ModelState(
             data={"cur": x.astype(np.float32)},
             blob=init_blob,
             lead=0,
-            extra={"layout": layout},
+            extra={"layout": layout, "init_dt": init_dt},
         )
 
     def step(self, state: ModelState) -> ModelState:
         cur = state.data["cur"]
         layout = state.extra.get("layout", self._layout or "NTCHW")
         next_lead = state.lead + self._step_h
+        step_idx = max(0, next_lead // self._step_h - 1)
+        active_name = self._fixed_version
+        active_sess = self._sess
+        if self._infer_mode == "cascade":
+            active_name = "short" if (step_idx + 1) <= self._split_step else "medium"
+            active_sess = self._sessions[active_name]
+
+        if state.lead == 0:
+            tp0 = state.blob.get("surface_tp_6h")
+            tp_mean = float(np.nanmean(tp0)) if tp0 is not None else 0.0
+            print(
+                f"[FuXi] first step: mode={self._infer_mode}, active={active_name}, split={self._split_step}, "
+                f"temb_mode={self._temb_mode}, tp_mean={tp_mean:.6f}, frame_delta={self._step_h}h, "
+                f"temb_lead={next_lead}h, layout={layout}",
+                flush=True,
+            )
 
         feeds: Dict[str, np.ndarray] = {}
-        for inp in self._sess.get_inputs():
+        for inp in active_sess.get_inputs():
             if "temb" in inp.name.lower():
-                feeds[inp.name] = fuxi_temb(next_lead)
+                if self._temb_mode == "zforecast":
+                    init_dt = state.extra.get("init_dt")
+                    if init_dt is not None:
+                        feeds[inp.name] = fuxi_temb_zforecast_style(init_dt, step_idx)
+                    else:
+                        feeds[inp.name] = fuxi_temb(next_lead)
+                else:
+                    feeds[inp.name] = fuxi_temb(next_lead)
             else:
                 feeds[inp.name] = cur
-        y = self._sess.run(None, feeds)[0].astype(np.float32)
+        y = active_sess.run(None, feeds)[0].astype(np.float32)
 
         if y.ndim == 5 and layout == "NTCHW":
             out_latest = y[0, -1]   # (70, H, W)
@@ -106,13 +158,17 @@ class FuXiModel(WeatherModel):
             data={"cur": y.astype(np.float32)},
             blob=blob_new,
             lead=next_lead,
-            extra={"layout": layout},
+            extra={
+                "layout": layout,
+                "init_dt": state.extra.get("init_dt"),
+            },
         )
 
     def unload(self) -> None:
         """释放 ONNX Session，归还 GPU 显存。"""
         import gc
         self._sess = None
+        self._sessions = {}
         self._loaded = False
         gc.collect()
 
