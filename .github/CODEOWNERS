@@ -1,0 +1,9 @@
+# Require human review on all changes by default.
+* @esesmalls
+
+# Core logic requires explicit owner review.
+/core/ @esesmalls
+/pipelines/ @esesmalls
+/config/ @esesmalls
+/scripts/ @esesmalls
+

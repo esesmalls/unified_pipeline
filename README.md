@@ -308,3 +308,42 @@ MODELS="fengwu fuxi" DATE_RANGE="20260301:20260318" ENABLE_EVAL=1 sbatch scripts
 
 1. 在 `core/evaluation/metrics.py` 添加指标计算
 2. 通过 CLI `--metrics` 或 `config/defaults.yaml` 使用
+
+## 13. Branch and PR Workflow
+
+为避免功能开发污染 `main`，本仓库采用分支开发 + PR 审核合并流程：
+
+1. 新需求在独立分支开发（`feature/*`、`fix/*`、`chore/*`）
+2. 每个脚本/逻辑单元独立验证后再 commit
+3. 推送分支后创建 PR 到 `main`
+4. `pr-gate` 检查通过 + reviewer 批准后才允许合并
+
+推荐命令：
+
+```bash
+git switch -c feature/your-topic
+# edit + validate
+git add <files>
+git commit -m "your message"
+git push -u origin feature/your-topic
+gh pr create --base main --head feature/your-topic
+```
+
+配套文件：
+
+- `AGENTS.md`：仓库级 agent 工作契约
+- `.cursor/rules/branch-pr-workflow.mdc`：Cursor agent 强约束规则
+- `.github/pull_request_template.md`：PR 模板
+- `.github/CODEOWNERS`：审查责任定义
+- `.github/workflows/pr-gate.yml`：PR 必需检查
+
+### Main Protection (GitHub Settings)
+
+在 GitHub 仓库的 `Settings -> Branches -> Branch protection rules` 中为 `main` 设置：
+
+- Require a pull request before merging
+- Require approvals: `1`（可按团队提升到 `2`）
+- Require status checks to pass before merging: `pr-gate / basic-checks`
+- Require conversation resolution before merging
+- Restrict who can push to matching branches（建议仅维护者）
+- Include administrators（建议开启）

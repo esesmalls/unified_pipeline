@@ -1,0 +1,22 @@
+---
+description: Enforce feature-branch + PR workflow for all agents
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# Branch and PR Required
+
+- Do not commit to `main`.
+- Do not push to `main`.
+- For new work, create and use a dedicated branch (`feature/*`, `fix/*`, `chore/*`).
+- Commit in small batches by script/logical unit.
+- Run relevant validation before each commit.
+- After branch push, create a PR to `main`.
+- Require review approval and passing checks before merge.
+
+# Commit Quality
+
+- Commit message must explain intent, not only changed files.
+- Include brief validation evidence in PR description.
+

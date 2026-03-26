@@ -1,0 +1,34 @@
+# Agent Workflow Contract
+
+This repository enforces a branch-first workflow for all feature work by any agent.
+
+## Mandatory Rules
+
+1. Never commit directly to `main`.
+2. Never push directly to `main`.
+3. New work must start from a dedicated branch:
+   - `feature/<topic>`
+   - `fix/<topic>`
+   - `chore/<topic>`
+4. Changes must be committed in small, readable batches (single script or single logical unit).
+5. Each commit must be validated before commit (lint/smoke tests relevant to touched files).
+6. Open a Pull Request to `main` after pushing branch.
+7. Merge to `main` is allowed only after required checks and review approval.
+
+## Commit and Push Pattern
+
+1. `git switch -c feature/<topic>`
+2. Edit one script/logical unit.
+3. Run minimal validation for that unit.
+4. `git add <files>`
+5. `git commit -m "<clear message>"`
+6. `git push -u origin <branch>`
+7. Create PR and request review.
+
+## PR Checklist (minimum)
+
+- Why this change is needed.
+- What files changed.
+- Validation commands and outputs.
+- Risks and rollback notes.
+

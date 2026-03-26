@@ -1,0 +1,36 @@
+name: pr-gate
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  basic-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Compile check
+        run: |
+          python -m compileall \
+            run_verify.py run_rolling.py run_eval_npy.py run_evaluate.py \
+            core pipelines zk_io
+
+      - name: Sanity import check
+        run: |
+          python - <<'PY'
+          import importlib
+          for mod in [
+              "run_verify", "run_rolling", "run_eval_npy", "run_evaluate",
+              "core.models.fuxi_model", "core.data.channel_mapper",
+          ]:
+              importlib.import_module(mod)
+          print("import checks passed")
+          PY
+
