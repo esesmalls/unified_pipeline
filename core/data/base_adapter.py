@@ -7,6 +7,7 @@
         "surface_u10":  np.ndarray (H, W) float32,
         "surface_v10":  np.ndarray (H, W) float32,
         "surface_t2m":  np.ndarray (H, W) float32,
+        "surface_tp_6h":np.ndarray (H, W) float32,        # optional, 6h 累计降水
         "pangu_z":      np.ndarray (13, H, W) float32,  # on PANGU_LEVELS
         "pangu_q":      np.ndarray (13, H, W) float32,
         "pangu_t":      np.ndarray (13, H, W) float32,

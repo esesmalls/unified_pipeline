@@ -57,6 +57,22 @@ def _msl_netcdf_to_pa(msl_var, arr: np.ndarray) -> np.ndarray:
     return a
 
 
+def _tp_netcdf_to_6h(tp_var, arr: np.ndarray) -> np.ndarray:
+    """
+    TP 转换到 6h 累计（surface_tp_6h）统一单位：
+    - 常见 ERA5 tp 为 m，转换为 mm
+    - 若已是 mm，保持不变
+    """
+    try:
+        u = str(getattr(tp_var, "units", "") or "").strip().lower()
+    except Exception:
+        u = ""
+    a = np.asarray(arr, dtype=np.float32)
+    if u in ("m", "meter", "meters", "metre", "metres"):
+        return (a * 1000.0).astype(np.float32)
+    return a
+
+
 def _find_hour_index(ts_sec: np.ndarray, hour: int) -> int:
     for i, v in enumerate(np.asarray(ts_sec).tolist()):
         if datetime.utcfromtimestamp(int(v)).hour == int(hour):
@@ -129,6 +145,11 @@ class GunDongAdapter(DataAdapter):
             u10 = r_s("u10")
             v10 = r_s("v10")
             t2m = r_s("t2m")
+            tp_6h = None
+            for cand in ("tp", "total_precipitation", "tp6", "tp_6h"):
+                if cand in ds.variables:
+                    tp_6h = _tp_netcdf_to_6h(ds.variables[cand], r_s(cand))
+                    break
         finally:
             dp.close()
             ds.close()
@@ -145,6 +166,7 @@ class GunDongAdapter(DataAdapter):
             "surface_u10": u10,
             "surface_v10": v10,
             "surface_t2m": t2m,
+            **({"surface_tp_6h": tp_6h} if tp_6h is not None else {}),
             "pangu_z": z13,
             "pangu_q": q13,
             "pangu_t": t13,

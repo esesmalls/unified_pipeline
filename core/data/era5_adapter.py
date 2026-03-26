@@ -41,6 +41,17 @@ _STD_LAT = np.linspace(90.0, -90.0, 721, dtype=np.float32)
 _STD_LON = np.arange(0.0, 360.0, 0.25, dtype=np.float32)
 
 
+def _tp_netcdf_to_6h(tp_var, arr: np.ndarray) -> np.ndarray:
+    try:
+        u = str(getattr(tp_var, "units", "") or "").strip().lower()
+    except Exception:
+        u = ""
+    a = np.asarray(arr, dtype=np.float32)
+    if u in ("m", "meter", "meters", "metre", "metres"):
+        return (a * 1000.0).astype(np.float32)
+    return a
+
+
 def _nc_path(root: Path, date_yyyymmdd: str, use_monthly: bool) -> Tuple[Path, Path]:
     y, m, d = date_yyyymmdd[:4], date_yyyymmdd[4:6], date_yyyymmdd[6:8]
     stem = f"{y}_{m}_{d}"
@@ -100,6 +111,11 @@ class ERA5FlatAdapter(DataAdapter):
             u10 = read_sfc("u10")
             v10 = read_sfc("v10")
             t2m = read_sfc("t2m")
+            tp_6h = None
+            for cand in ("tp", "total_precipitation", "tp6", "tp_6h"):
+                if cand in ds.variables:
+                    tp_6h = _tp_netcdf_to_6h(ds.variables[cand], read_sfc(cand))
+                    break
         finally:
             dp.close()
             ds.close()
@@ -116,6 +132,7 @@ class ERA5FlatAdapter(DataAdapter):
             "surface_u10": u10,
             "surface_v10": v10,
             "surface_t2m": t2m,
+            **({"surface_tp_6h": tp_6h} if tp_6h is not None else {}),
             "pangu_z": z13,
             "pangu_q": q13,
             "pangu_t": t13,

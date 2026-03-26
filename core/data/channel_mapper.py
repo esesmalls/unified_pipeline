@@ -139,7 +139,11 @@ def fengwu_pred69_to_blob(pred69: np.ndarray) -> Dict[str, np.ndarray]:
 # FuXi
 # ------------------------------------------------------------------ #
 
-def blob_to_fuxi_70ch(blob: Dict[str, np.ndarray], tp_fill: float = 0.0) -> np.ndarray:
+def blob_to_fuxi_70ch(
+    blob: Dict[str, np.ndarray],
+    tp_fill: float = 0.0,
+    tp_fallback: str = "zero",
+) -> np.ndarray:
     """
     70 通道单帧（FuXi 物理顺序）：
       Z13,T13,U13,V13,R13（FUXI_LEVELS 50→1000），T2M,U10,V10,MSL,TP
@@ -154,13 +158,19 @@ def blob_to_fuxi_70ch(blob: Dict[str, np.ndarray], tp_fill: float = 0.0) -> np.n
     r13 = np.empty_like(q13, dtype=np.float32)
     for i, lev in enumerate(FUXI_LEVELS):
         r13[i] = specific_humidity_to_relative_humidity(q13[i], t13[i], float(lev))
+    if "surface_tp_6h" in blob:
+        tp = np.asarray(blob["surface_tp_6h"], dtype=np.float32)
+    elif tp_fallback == "error":
+        raise ValueError("FuXi 70ch 需要 surface_tp_6h，但当前 blob 缺失该字段。")
+    else:
+        tp = np.full_like(blob["surface_msl"], tp_fill, dtype=np.float32)
     s5 = np.stack(
         [
             blob["surface_t2m"],
             blob["surface_u10"],
             blob["surface_v10"],
             blob["surface_msl"],
-            np.full_like(blob["surface_msl"], tp_fill, dtype=np.float32),
+            tp,
         ],
         axis=0,
     ).astype(np.float32)
@@ -171,10 +181,12 @@ def blob_to_fuxi_70ch(blob: Dict[str, np.ndarray], tp_fill: float = 0.0) -> np.n
 def blobs_to_fuxi_2frame(
     blob_prev: Dict[str, np.ndarray],
     blob_now: Dict[str, np.ndarray],
+    tp_fill: float = 0.0,
+    tp_fallback: str = "zero",
 ) -> np.ndarray:
     """shape: (2, 70, H, W) float32"""
-    f0 = blob_to_fuxi_70ch(blob_prev)
-    f1 = blob_to_fuxi_70ch(blob_now)
+    f0 = blob_to_fuxi_70ch(blob_prev, tp_fill=tp_fill, tp_fallback=tp_fallback)
+    f1 = blob_to_fuxi_70ch(blob_now, tp_fill=tp_fill, tp_fallback=tp_fallback)
     return np.stack([f0, f1], axis=0).astype(np.float32)
 
 
