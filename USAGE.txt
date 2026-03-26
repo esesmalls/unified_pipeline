@@ -1,5 +1,8 @@
 本目录 unified_pipeline：统一推理/评估流水线代码（与 ZK_Models 根目录下历史脚本、GunDong_Infer 等隔离）。
 
+默认 conda 环境（与 scripts/submit_*.sh 一致）：torch2.4_dtk25.04_cp310_e2s
+  本地运行前：conda activate torch2.4_dtk25.04_cp310_e2s
+
 路径约定（见 runtime_paths.py）：
   UNIFIED_PIPELINE_ROOT = 本目录（代码 + config/）
   ZK_MODELS_ROOT       = 上级 ZK_Models（pangu/ fengwu/ fuxi/ ONNX 权重仍放这里）
@@ -19,3 +22,13 @@ Slurm 提交请从本目录调用 scripts/ 下脚本，例如：
 
 提交五模型 20260303 示例：
   bash scripts/submit_gundong_20260303_5models.sh
+
+FuXi 新策略（config/models.yaml）：
+  infer_mode: cascade|fixed      # 默认 cascade
+  cascade_split_step: 20         # 默认前20步 short，后续 medium
+  temb_mode: zforecast|legacy    # 默认 zforecast（参考 zforecast.py）
+  tp_fallback: zero|error        # 缺失 surface_tp_6h 时回退行为
+
+排查建议：
+  1) 看 rolling 日志首个 [FuXi] first step，确认 mode/active/split/temb_mode/layout
+  2) 若 tp_mean 接近 0，表示数据源未提供 6h TP，当前走 tp_fallback
