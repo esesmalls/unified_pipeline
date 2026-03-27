@@ -14,9 +14,11 @@ alwaysApply: true
 - Run relevant validation before each commit.
 - After branch push, create a PR to `main`.
 - Require review approval and passing checks before merge.
+- Require `CHANGELOG.md` update for feature/fix/chore changes (or explicit N/A rationale in PR).
 
 # Commit Quality
 
 - Commit message must explain intent, not only changed files.
 - Include brief validation evidence in PR description.
+- Include changelog evidence (or N/A rationale) in PR description.
 

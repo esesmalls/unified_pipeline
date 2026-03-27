@@ -34,3 +34,24 @@ jobs:
           print("import checks passed")
           PY
 
+      - name: Changelog required for core changes
+        run: |
+          set -e
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD)"
+          echo "$CHANGED"
+          NEED_LOG=0
+          for p in $CHANGED; do
+            case "$p" in
+              core/*|pipelines/*|scripts/*|config/*|run_*.py|infer_cepri_onnx.py|zk_io/*)
+                NEED_LOG=1
+                ;;
+            esac
+          done
+          if [ "$NEED_LOG" -eq 1 ]; then
+            echo "$CHANGED" | grep -q '^CHANGELOG.md$' || {
+              echo "CHANGELOG.md must be updated for core/config/pipeline/script changes."
+              exit 1
+            }
+          fi
+

@@ -15,6 +15,7 @@ This repository enforces a branch-first workflow for all feature work by any age
 6. Open a Pull Request to `main` after pushing branch.
 7. Merge to `main` is allowed only after required checks and review approval.
 8. Any behavior/config/CLI/output-path change must update `README.md` (and `USAGE.txt` when command usage changes), or explicitly justify `N/A` in PR.
+9. Any feature/fix/chore change must update `CHANGELOG.md` (or explicitly justify `N/A` in PR).
 
 ## Commit and Push Pattern
 
@@ -25,6 +26,7 @@ This repository enforces a branch-first workflow for all feature work by any age
 5. `git commit -m "<clear message>"`
 6. `git push -u origin <branch>`
 7. Create PR and request review.
+8. Update `CHANGELOG.md` under `Unreleased` before opening PR (unless `N/A` is justified).
 
 ## PR Checklist (minimum)
 
