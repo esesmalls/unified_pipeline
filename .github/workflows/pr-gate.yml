@@ -10,6 +10,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Shallow clones (default depth 1) often lack merge parents / base refs, which
+          # breaks `git fetch`/`git diff` against origin/main (exit 128) in the changelog step.
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -42,8 +46,9 @@ jobs:
       - name: Changelog required for core changes
         run: |
           set -e
-          git fetch origin "${{ github.base_ref }}" --depth=1
-          CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD)"
+          # Use PR base/head SHAs instead of origin/main...HEAD so shallow clones do not
+          # miss objects and cause git to exit 128.
+          CHANGED="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
           echo "$CHANGED"
           NEED_LOG=0
           for p in $CHANGED; do
