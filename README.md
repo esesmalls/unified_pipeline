@@ -146,6 +146,8 @@ conda activate torch2.4_dtk25.04_cp310_e2s
 
 集群脚本（`submit_verify.sh` / `submit_rolling.sh` / `submit_evaluate.sh`）默认使用上述 conda 环境；可通过环境变量 `CONDA_ENV` 覆盖。
 
+**GitHub Actions（PR 门禁）**：`.github/workflows/pr-gate.yml` 在合并前会做编译与轻量 `import` 自检。Runner 通过根目录 [`requirements-ci.txt`](requirements-ci.txt) 安装与这些自检一致的最小 pip 依赖（含 `netCDF4`、`onnxruntime` 等 import 链所需项；**不含** `torch` 等与 GraphCast 实跑相关的重型包）。完整推理与评估仍以本节的 conda / 集群环境为准。
+
 - Slurm + DTK/ROCm（或 `USE_CUDA=1` 切 CUDA）
 
 ## 7. 快速开始
@@ -347,3 +349,26 @@ gh pr create --base main --head feature/your-topic
 - Require conversation resolution before merging
 - Restrict who can push to matching branches（建议仅维护者）
 - Include administrators（建议开启）
+
+## 14. Version and Change Log
+
+本仓库使用 `CHANGELOG.md` 记录每次主分支合并后的版本信息与测试简报。
+
+维护要求：
+
+1. 对功能/修复/配置/流程改动，PR 必须同步更新 `CHANGELOG.md`（或在 PR 里说明 `N/A` 原因）。
+2. 优先写入 `Unreleased` 区域，合并后整理为具体版本块。
+3. 每条版本记录至少包含：
+   - Version
+   - DateTime
+   - Merged PR/Branch
+   - Summary of Changes (all)
+   - Test Report (brief)
+   - Related Commits
+
+版本号约定（最小语义化版本）：
+
+- `vMAJOR.MINOR.PATCH`
+- `MAJOR`：不兼容变更
+- `MINOR`：向后兼容的新功能
+- `PATCH`：向后兼容的修复与非功能性优化

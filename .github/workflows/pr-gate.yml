@@ -10,6 +10,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Shallow clones (default depth 1) often lack merge parents / base refs, which
+          # breaks `git fetch`/`git diff` against origin/main (exit 128) in the changelog step.
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -22,6 +26,11 @@ jobs:
             run_verify.py run_rolling.py run_eval_npy.py run_evaluate.py \
             core pipelines zk_io
 
+      - name: Install CI import dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements-ci.txt
+
       - name: Sanity import check
         run: |
           python - <<'PY'
@@ -33,4 +42,26 @@ jobs:
               importlib.import_module(mod)
           print("import checks passed")
           PY
+
+      - name: Changelog required for core changes
+        run: |
+          set -e
+          # Use PR base/head SHAs instead of origin/main...HEAD so shallow clones do not
+          # miss objects and cause git to exit 128.
+          CHANGED="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          echo "$CHANGED"
+          NEED_LOG=0
+          for p in $CHANGED; do
+            case "$p" in
+              core/*|pipelines/*|scripts/*|config/*|run_*.py|infer_cepri_onnx.py|zk_io/*)
+                NEED_LOG=1
+                ;;
+            esac
+          done
+          if [ "$NEED_LOG" -eq 1 ]; then
+            echo "$CHANGED" | grep -q '^CHANGELOG.md$' || {
+              echo "CHANGELOG.md must be updated for core/config/pipeline/script changes."
+              exit 1
+            }
+          fi
 
