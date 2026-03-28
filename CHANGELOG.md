@@ -23,6 +23,7 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 - TBD
 
 ### Summary of Changes (all)
+- CI: `pr-gate` installs [`requirements-ci.txt`](requirements-ci.txt) before the sanity import step so GitHub Actions has the same minimal third-party imports as local entrypoints (`netCDF4` for `cepri_loader`, `onnxruntime` for FuXi, `numpy<2` for ORT ABI compatibility, etc.), without requiring the full e2s conda stack.
 - TBD
 
 ### Test Report (brief)

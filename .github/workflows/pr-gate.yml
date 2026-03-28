@@ -22,6 +22,11 @@ jobs:
             run_verify.py run_rolling.py run_eval_npy.py run_evaluate.py \
             core pipelines zk_io
 
+      - name: Install CI import dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements-ci.txt
+
       - name: Sanity import check
         run: |
           python - <<'PY'

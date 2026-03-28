@@ -146,6 +146,8 @@ conda activate torch2.4_dtk25.04_cp310_e2s
 
 集群脚本（`submit_verify.sh` / `submit_rolling.sh` / `submit_evaluate.sh`）默认使用上述 conda 环境；可通过环境变量 `CONDA_ENV` 覆盖。
 
+**GitHub Actions（PR 门禁）**：`.github/workflows/pr-gate.yml` 在合并前会做编译与轻量 `import` 自检。Runner 通过根目录 [`requirements-ci.txt`](requirements-ci.txt) 安装与这些自检一致的最小 pip 依赖（含 `netCDF4`、`onnxruntime` 等 import 链所需项；**不含** `torch` 等与 GraphCast 实跑相关的重型包）。完整推理与评估仍以本节的 conda / 集群环境为准。
+
 - Slurm + DTK/ROCm（或 `USE_CUDA=1` 切 CUDA）
 
 ## 7. 快速开始
