@@ -213,10 +213,14 @@ def main():
 
     variables = args.variables if args.variables else None
 
+    # torchrun 多进程时各 rank 并发 rocm-smi 可能扰动驱动；仅 rank0 轮询整机 DCU
+    _rank = int(os.environ.get("RANK", "0"))
+    _monitor_ok = not args.no_monitor and _rank == 0
+
     with start_hardware_logger(
         log_dir=_ZK_ROOT / "logs",
         poll_interval=args.monitor_interval,
-        enabled=not args.no_monitor,
+        enabled=_monitor_ok,
     ):
         run_rolling(
             model_names=model_names,

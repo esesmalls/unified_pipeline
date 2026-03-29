@@ -408,6 +408,8 @@ MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=
   - `WORLD_SIZE=1` 串行多模型时属于预期；可用 `WORLD_SIZE>1` + `--parallel-mode model|date` 提升并发
 - `--enable-eval` 与多卡并行（`WORLD_SIZE>1`）
   - `parallel-mode model` 下各 rank 可能同时写同一 `eval_{max_lead}h_{init_tag}/timeseries_metrics_*.csv`，导致评估结果不完整；需要单次完整内嵌评估时请保持 `WORLD_SIZE=1`，或并行关评估后改用 `run_eval_npy.py`
+- 多进程滚动推理偶发 `SIGABRT` / `local_rank` 失败（FuXi 等 ONNX 模型）
+  - 实现上已对 `WORLD_SIZE>1` 仅 **rank0** 启用 `rocm-smi` 硬件监控，并对各 `LOCAL_RANK` **错峰几秒** 再加载模型；仍失败时可加 `--no-monitor` 或略降低并行度重试
 - FuXi 首步日志里 `tp_mean` 接近 0
   - 说明 blob 仍无可用降水：instant 无 tp **且** 不存在可读 accum、或 `tp_fallback` 为 `zero` 且填零
   - `gundong_20260324` 在提供同日 `*_surface_accum.nc` 时应出现非零 `tp_mean`（除非实况确为无降水）

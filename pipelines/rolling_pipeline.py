@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -202,6 +203,15 @@ def run_rolling(
     )
 
     _progress(f"处理日期: {dates}  模型: {model_names}")
+
+    # 多进程时错开 ONNX/ROCm Session 创建，降低 MIGraphX 等并发初始化 SIGABRT 概率
+    _ws = int(os.environ.get("WORLD_SIZE", "1"))
+    if _ws > 1:
+        _lr = int(os.environ.get("LOCAL_RANK", "0"))
+        if _lr > 0:
+            delay_s = min(30.0, 3.0 * _lr)
+            _progress(f"WORLD_SIZE={_ws}: LOCAL_RANK={_lr} 错峰等待 {delay_s:.1f}s 再加载模型")
+            time.sleep(delay_s)
 
     # 按 init_tag 共享 MetricsAccumulator：所有模型跑完后一次性写 CSV/时序图，避免相互覆盖
     acc_by_tag: Dict[str, MetricsAccumulator] = {}

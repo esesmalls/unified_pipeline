@@ -86,6 +86,8 @@ METRICS="${METRICS:-W-MAE W-RMSE}"
 #   model — 单日任务：1天 × 4模型 × WORLD_SIZE=4 → 每卡 1 个模型
 WORLD_SIZE="${WORLD_SIZE:-1}"
 PARALLEL_MODE="${PARALLEL_MODE:-auto}"
+# 多作业同时跑 torchrun 时避免同节点 master 端口冲突（例：并行作业 B 可设 MASTER_PORT=29501）
+MASTER_PORT="${MASTER_PORT:-29500}"
 # Slurm 将批处理脚本复制到 spool（$0 常为 .../slurm_script），不代表仓库路径
 SCRIPT_PATH="${UNIFIED_ROOT}/scripts/submit_rolling.sh"
 PY_ENTRY="${UNIFIED_ROOT}/run_rolling.py"
@@ -225,7 +227,7 @@ fi
 
 ARGS+=(--parallel-mode "${PARALLEL_MODE}")
 
-echo "[info] parallel_mode=${PARALLEL_MODE}  world_size=${WORLD_SIZE}"
+echo "[info] parallel_mode=${PARALLEL_MODE}  world_size=${WORLD_SIZE}  master_port=${MASTER_PORT}"
 echo "[info] ENV snapshot: MODELS=${MODELS} DATA_SOURCE=${DATA_SOURCE} DATE_RANGE=${DATE_RANGE} INIT_HOUR=${INIT_HOUR} LEAD_STEP=${LEAD_STEP} MAX_LEAD=${MAX_LEAD} WORLD_SIZE=${WORLD_SIZE} PARALLEL_MODE=${PARALLEL_MODE} ENABLE_EVAL=${ENABLE_EVAL}"
 echo "[info] CMD(base): python ${PY_ENTRY} ${ARGS[*]}"
 echo "[info] 开始时间: $(date)"
@@ -234,7 +236,7 @@ if [ "${WORLD_SIZE}" -gt "1" ]; then
     echo "[info] 多进程模式: WORLD_SIZE=${WORLD_SIZE}  PARALLEL_MODE=${PARALLEL_MODE}"
     torchrun \
         --nproc_per_node="${WORLD_SIZE}" \
-        --master_port=29500 \
+        --master_port="${MASTER_PORT}" \
         "${PY_ENTRY}" "${ARGS[@]}"
 else
     python "${PY_ENTRY}" "${ARGS[@]}"
