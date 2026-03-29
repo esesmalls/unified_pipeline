@@ -202,14 +202,34 @@ def run_rolling(
         use_monthly_subdir=src_cfg.get("use_monthly_subdir", False),
     )
 
+    # 与适配器扫描到的有.pressure 文件的日期取交集，避免 load_blob 反复失败却仍先加载大模型
+    try:
+        avail_dates = set(adapter.list_dates())
+    except Exception:
+        avail_dates = set()
+    if avail_dates:
+        before_dates = list(dates)
+        dates = [d for d in dates if d in avail_dates]
+        missing_ds = [d for d in before_dates if d not in avail_dates]
+        if missing_ds:
+            sample = sorted(avail_dates)[:8]
+            _progress(
+                f"警告: 数据目录无以下日期的 pressure 日文件，已剔除: {missing_ds}。"
+                f"可选日期示例: {sample}{'...' if len(avail_dates) > 8 else ''}"
+            )
+    if not dates:
+        _progress("无可用日期（与数据目录交集为空），本 rank 退出")
+        return
+
     _progress(f"处理日期: {dates}  模型: {model_names}")
 
-    # 多进程时错开 ONNX/ROCm Session 创建，降低 MIGraphX 等并发初始化 SIGABRT 概率
+    # 多进程时错开 ONNX/ROCm Session 创建，降低并发初始化 SIGABRT 概率（秒/LR 可用 ROLLING_ORT_STAGGER_SEC 覆盖）
     _ws = int(os.environ.get("WORLD_SIZE", "1"))
     if _ws > 1:
         _lr = int(os.environ.get("LOCAL_RANK", "0"))
         if _lr > 0:
-            delay_s = min(30.0, 3.0 * _lr)
+            per_rank = float(os.environ.get("ROLLING_ORT_STAGGER_SEC", "8"))
+            delay_s = min(90.0, per_rank * _lr)
             _progress(f"WORLD_SIZE={_ws}: LOCAL_RANK={_lr} 错峰等待 {delay_s:.1f}s 再加载模型")
             time.sleep(delay_s)
 
@@ -257,7 +277,9 @@ def run_rolling(
                 try:
                     init_blob = adapter.load_blob(date, init_hour)
                 except FileNotFoundError as e:
-                    _progress(f"[{display_name}] 跳过 {init_tag}：{e}")
+                    _progress(
+                        f"[{display_name}] 跳过 {init_tag}（缺少起报或面场文件，未执行滚动推理）: {e}"
+                    )
                     continue
 
                 prev_dt = init_dt - timedelta(hours=step_h)
