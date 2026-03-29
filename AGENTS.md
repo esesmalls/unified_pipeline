@@ -17,6 +17,12 @@ This repository enforces a branch-first workflow for all feature work by any age
 8. Any behavior/config/CLI/output-path change must update `README.md` (and `USAGE.txt` when command usage changes), or explicitly justify `N/A` in PR.
 9. Any feature/fix/chore change must update `CHANGELOG.md` (or explicitly justify `N/A` in PR).
 
+## README-First Analysis Rule
+
+10. Before substantial analysis, architecture design, or cross-file implementation, read `README.md` first (at minimum: structure, model integration, runtime/CI constraints sections).
+11. If code behavior and `README.md` are inconsistent, update `README.md` in the same PR before (or together with) the code change.
+12. For newly added models or major model-path refactors, append/update that model's configuration flow in `README.md` (input adapter, channel mapping, wrapper step strategy, config keys).
+
 ## Commit and Push Pattern
 
 1. `git switch -c feature/<topic>`
