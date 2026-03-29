@@ -215,6 +215,7 @@ unified_pipeline/
 - 当前内置数据源：
   - `test_era5`（`era5_flat`）
   - `gundong_20260324`（`gundong_20260324`）
+    - 面场默认读 `surface/YYYY_MM_DD_surface_instant.nc`；若其中无 `tp`/`total_precipitation` 等，适配器会**在同日**尝试 `surface/YYYY_MM_DD_surface_accum.nc` 中的 `tp`，写入 blob 的 `surface_tp_6h`（FuXi 70 通道第 69 路），单位经 `_tp_netcdf_to_6h` 与 instant 一致处理。
 
 ### `config/defaults.yaml`
 
@@ -340,6 +341,19 @@ TIME_TAG=20260308T12 sbatch scripts/submit_evaluate.sh
 MODELS="fengwu fuxi" DATE_RANGE="20260301:20260318" ENABLE_EVAL=1 sbatch scripts/submit_rolling.sh
 ```
 
+历史作业（如 `zk_rolling`、单日 5 模型 + 内嵌评估）等价重跑示例（建议新 `OUTPUT_ROOT` 子目录以免与旧 NPY 混用）：
+
+```bash
+MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=12 \
+  LEAD_STEP=6 MAX_LEAD=240 ENABLE_EVAL=1 \
+  OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_tpfix \
+  WORLD_SIZE=1 PARALLEL_MODE=auto \
+  sbatch scripts/submit_rolling.sh
+```
+
+- 需要 **`WORLD_SIZE=1`** 才能保证 `--enable-eval` 写入的 `eval_*/timeseries_metrics_*.csv` 完整；若设 `WORLD_SIZE=5` 并行跑各模型，多 rank 会争写同一 CSV。
+- 若优先缩短墙钟时间：可对推理使用 `WORLD_SIZE=5` 且 **`ENABLE_EVAL=0`**，完成后用 [7.4](#74-已有-npy-的离线评估推荐) `run_eval_npy.py` 离线汇总评估。
+
 ### 8.1 日志首屏字段解读（排障建议）
 
 三个 `submit_*` 脚本都会在日志开头打印：
@@ -392,9 +406,11 @@ MODELS="fengwu fuxi" DATE_RANGE="20260301:20260318" ENABLE_EVAL=1 sbatch scripts
   - 检查 `date-range`、`init-hour`、`lead-step` 与输出 NPY 的 `init_tag` 是否一致
 - GPU 利用率低
   - `WORLD_SIZE=1` 串行多模型时属于预期；可用 `WORLD_SIZE>1` + `--parallel-mode model|date` 提升并发
+- `--enable-eval` 与多卡并行（`WORLD_SIZE>1`）
+  - `parallel-mode model` 下各 rank 可能同时写同一 `eval_{max_lead}h_{init_tag}/timeseries_metrics_*.csv`，导致评估结果不完整；需要单次完整内嵌评估时请保持 `WORLD_SIZE=1`，或并行关评估后改用 `run_eval_npy.py`
 - FuXi 首步日志里 `tp_mean` 接近 0
-  - 说明当前数据源未提供 `surface_tp_6h`，触发了 `tp_fallback`
-  - 若需严格对齐官方 70ch 输入语义，建议在数据适配器中补充 6h 累计降水字段
+  - 说明 blob 仍无可用降水：instant 无 tp **且** 不存在可读 accum、或 `tp_fallback` 为 `zero` 且填零
+  - `gundong_20260324` 在提供同日 `*_surface_accum.nc` 时应出现非零 `tp_mean`（除非实况确为无降水）
 
 ## 12. 扩展指南
 

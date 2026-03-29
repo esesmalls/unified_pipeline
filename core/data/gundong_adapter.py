@@ -4,6 +4,7 @@ GunDong 20260324 格式适配器。
 目录布局：
   {root}/pressure/pressure/YYYY_MM_DD_pressure.nc
   {root}/surface/YYYY_MM_DD_surface_instant.nc
+  {root}/surface/YYYY_MM_DD_surface_accum.nc（可选；含 tp 时补充 FuXi 所需的 surface_tp_6h）
 
 重构自 GunDong_Infer/data_adapter_20260324.py。
 """
@@ -37,6 +38,36 @@ def _day_paths(root: Path, date_yyyymmdd: str) -> Tuple[Path, Path]:
     p = root / "pressure" / "pressure" / f"{stem}_pressure.nc"
     s = root / "surface" / f"{stem}_surface_instant.nc"
     return p, s
+
+
+def _accum_surface_path(root: Path, date_yyyymmdd: str) -> Path:
+    stem = _dkey(date_yyyymmdd)
+    return root / "surface" / f"{stem}_surface_accum.nc"
+
+
+def _try_load_tp_from_accum(
+    root: Path, date_yyyymmdd: str, hour: int
+) -> Optional[np.ndarray]:
+    """
+    instant 面文件无 tp 时，从同日 surface_accum 读取累计降水，供 FuXi 等指标用。
+    """
+    path = _accum_surface_path(root, date_yyyymmdd)
+    if not path.is_file():
+        return None
+    da = Dataset(str(path))
+    try:
+        s_time = np.array(da.variables["valid_time"][:], dtype=np.int64)
+        s_i = _find_hour_index(s_time, hour)
+        lat_a = np.array(da.variables["latitude"][:], dtype=np.float32)
+        for cand in ("tp", "total_precipitation", "tp6", "tp_6h"):
+            if cand not in da.variables:
+                continue
+            raw = np.array(da.variables[cand][s_i], dtype=np.float32)
+            raw, _ = _ensure_ns_lat(raw, lat_a)
+            return _tp_netcdf_to_6h(da.variables[cand], raw)
+    finally:
+        da.close()
+    return None
 
 
 def _ensure_ns_lat(data: np.ndarray, lat: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -153,6 +184,9 @@ class GunDongAdapter(DataAdapter):
         finally:
             dp.close()
             ds.close()
+
+        if tp_6h is None:
+            tp_6h = _try_load_tp_from_accum(self.root, date_yyyymmdd, hour)
 
         tgt = np.asarray(PANGU_LEVELS, dtype=np.float64)
         z13 = _interp_levels(z_s, p_levels, tgt)

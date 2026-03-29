@@ -27,6 +27,7 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 
 ### Summary of Changes (all)
 
+- Data: `gundong_20260324` adapter reads `tp` from `surface/*_surface_accum.nc` when instant surface has no precipitation variable, populating `surface_tp_6h` for FuXi 70ch input.
 - CI: `pr-gate` installs `[requirements-ci.txt](requirements-ci.txt)` before the sanity import step so GitHub Actions has the same minimal third-party imports as local entrypoints (`netCDF4` for `cepri_loader`, `onnxruntime` for FuXi, `numpy<2` for ORT ABI compatibility, etc.), without requiring the full e2s conda stack.
 - CI: `checkout` uses `fetch-depth: 0` and the changelog gate diffs `pull_request.base.sha` vs `head.sha` so git no longer exits 128 on shallow merge checkouts.
 - Docs: optimize README architecture mermaid diagram for clarity and add README-first rule to AGENTS.md.
