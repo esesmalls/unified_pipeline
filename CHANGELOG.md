@@ -27,6 +27,7 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 
 ### Summary of Changes (all)
 
+- Docs: README §8.0.1 records failed `torchrun` multi-model parallel rolling on DCU (FuXi `SIGABRT` at `local_rank` 2; jobs e.g. 110494072/110494391); recommend `WORLD_SIZE=1` for production until ORT/driver follow-up.
 - Data: `gundong_20260324` accepts pressure NC under `{root}/pressure/` (flat) or `{root}/pressure/pressure/` (nested); detector matches both.
 - Rolling: intersect `--date-range` with `adapter.list_dates()` before loading models; clarify skip logs when pressure/surface files are missing; default ORT init stagger 8s/LR (override `ROLLING_ORT_STAGGER_SEC`).
 - Rolling: `torchrun` multi-process uses rank0-only hardware monitor and per-`LOCAL_RANK` startup staggering to reduce ROCm/ONNX concurrent-init SIGABRT risk.

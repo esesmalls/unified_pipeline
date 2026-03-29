@@ -341,18 +341,26 @@ TIME_TAG=20260308T12 sbatch scripts/submit_evaluate.sh
 MODELS="fengwu fuxi" DATE_RANGE="20260301:20260318" ENABLE_EVAL=1 sbatch scripts/submit_rolling.sh
 ```
 
-历史作业（如 `zk_rolling`、单日 5 模型 + 内嵌评估）等价重跑示例（建议新 `OUTPUT_ROOT` 子目录以免与旧 NPY 混用）：
+仅跑 **串行 + 内嵌评估**（推荐，等价「作业 A」）示例：
 
 ```bash
 MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=12 \
   LEAD_STEP=6 MAX_LEAD=240 ENABLE_EVAL=1 \
-  OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_tpfix \
+  OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_rolling_A_serial \
   WORLD_SIZE=1 PARALLEL_MODE=auto \
-  sbatch scripts/submit_rolling.sh
+  sbatch -J zk_roll_A_serial scripts/submit_rolling.sh
 ```
 
 - 需要 **`WORLD_SIZE=1`** 才能保证 `--enable-eval` 写入的 `eval_*/timeseries_metrics_*.csv` 完整；若设 `WORLD_SIZE=5` 并行跑各模型，多 rank 会争写同一 CSV。
-- 若优先缩短墙钟时间：可对推理使用 `WORLD_SIZE=5` 且 **`ENABLE_EVAL=0`**，完成后用 [7.4](#74-已有-npy-的离线评估推荐) `run_eval_npy.py` 离线汇总评估。
+- **不推荐**在当前 DCU + 混合 ONNX（含 FuXi）栈上使用 **`WORLD_SIZE>1` 做按模型分卡并行**，见下方「8.0.1」试验记录；缩短墙钟请优先 **`WORLD_SIZE=1` 跑通后**再考虑离线评估或其它拆分方式。
+
+#### 8.0.1 多进程 `torchrun` 并行推理试验记录（失败）
+
+在 **2026-03** 集群试验中：`parallel-mode auto` + 单日五模型 + `WORLD_SIZE=5`（每 rank 一局模型），作业如 `zk_roll_tpab_B`（例：Slurm `110494072`、`110494391`）均在 FuXi 对应进程 **反复**以 **`SIGABRT`（exit -6）** 退出：`torchrun` 报告 **首个失败子进程为 `local_rank: 2`（FuXi）**，其余 rank 被连带终止。
+
+已尝试缓解：**仅 rank0 启用** 硬件监控（避免多进程并发 `rocm-smi`）、按 `LOCAL_RANK` **错峰启动**加载 ONNX（默认约 `8s×LOCAL_RANK`，可调 `ROLLING_ORT_STAGGER_SEC`）、`MASTER_PORT` 隔离多作业。在相同节点类型上 **FuXi 仍不稳定**，根因推断为 **ROCm / ONNX Runtime 多进程并发建 Session** 与驱动栈交互，非业务 Python 逻辑错误。
+
+**当前结论**：滚动推理生产用法 **默认只启用作业 A 类配置**——`**WORLD_SIZE=1**` + 需评估时 **`ENABLE_EVAL=1`**。多卡按模型并行列为 **待验证/高风险**，需后续 ORT 或调度层面方案后再启用。
 
 ### 8.1 日志首屏字段解读（排障建议）
 
