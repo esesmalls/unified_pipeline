@@ -27,6 +27,7 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 
 ### Summary of Changes (all)
 
+- Data: `gundong_20260324` accepts pressure NC under `{root}/pressure/` (flat) or `{root}/pressure/pressure/` (nested); detector matches both.
 - Rolling: intersect `--date-range` with `adapter.list_dates()` before loading models; clarify skip logs when pressure/surface files are missing; default ORT init stagger 8s/LR (override `ROLLING_ORT_STAGGER_SEC`).
 - Rolling: `torchrun` multi-process uses rank0-only hardware monitor and per-`LOCAL_RANK` startup staggering to reduce ROCm/ONNX concurrent-init SIGABRT risk.
 - Data: `gundong_20260324` adapter reads `tp` from `surface/*_surface_accum.nc` when instant surface has no precipitation variable, populating `surface_tp_6h` for FuXi 70ch input.

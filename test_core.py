@@ -38,8 +38,11 @@ print("  OK")
 
 print("Step 6: format detection + GunDong I/O...")
 _GUNDONG_ROOT = Path("/public/share/aciwgvx1jd/20260324")
-_PDIR = _GUNDONG_ROOT / "pressure" / "pressure"
-if _PDIR.is_dir() and any(_PDIR.glob("*_pressure.nc")):
+_has_gundong_pressure = any(
+    _pd.is_dir() and any(_pd.glob("*_pressure.nc"))
+    for _pd in (_GUNDONG_ROOT / "pressure" / "pressure", _GUNDONG_ROOT / "pressure")
+)
+if _has_gundong_pressure:
     fmt = detect_format(_GUNDONG_ROOT)
     print(f"  gundong 格式: {fmt}")
 
@@ -71,7 +74,7 @@ if _PDIR.is_dir() and any(_PDIR.glob("*_pressure.nc")):
         assert float(np.nanmean(b03["surface_tp_6h"])) > 0.0, "tp mean should be positive for real accum"
         print("  20260303@12h: surface_tp_6h from accum OK")
 else:
-    print("  skip (no sample tree at /public/share/aciwgvx1jd/20260324/pressure/pressure)")
+    print("  skip (no *_pressure.nc under .../pressure[/pressure])")
     print("Step 7: metrics computation...")
     lats = np.linspace(90, -90, 721, dtype=np.float32)
     acc = MetricsAccumulator(lats)

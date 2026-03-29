@@ -1,8 +1,9 @@
 """
 GunDong 20260324 格式适配器。
 
-目录布局：
-  {root}/pressure/pressure/YYYY_MM_DD_pressure.nc
+目录布局（气压文件二者任一即可）：
+  {root}/pressure/pressure/YYYY_MM_DD_pressure.nc（历史嵌套目录）
+  {root}/pressure/YYYY_MM_DD_pressure.nc（扁平布局，与当前 /public/share/.../20260324 一致）
   {root}/surface/YYYY_MM_DD_surface_instant.nc
   {root}/surface/YYYY_MM_DD_surface_accum.nc（可选；含 tp 时补充 FuXi 所需的 surface_tp_6h）
 
@@ -33,11 +34,24 @@ def _dkey(date_yyyymmdd: str) -> str:
     return f"{date_yyyymmdd[:4]}_{date_yyyymmdd[4:6]}_{date_yyyymmdd[6:8]}"
 
 
+def _pressure_nc_path(root: Path, date_yyyymmdd: str) -> Path:
+    """优先嵌套 pressure/pressure/，否则使用 pressure/ 扁平布局。"""
+    stem = _dkey(date_yyyymmdd)
+    nested = root / "pressure" / "pressure" / f"{stem}_pressure.nc"
+    flat = root / "pressure" / f"{stem}_pressure.nc"
+    if nested.is_file():
+        return nested
+    if flat.is_file():
+        return flat
+    raise FileNotFoundError(
+        f"missing {stem}_pressure.nc (tried {nested} | {flat})"
+    )
+
+
 def _day_paths(root: Path, date_yyyymmdd: str) -> Tuple[Path, Path]:
     stem = _dkey(date_yyyymmdd)
-    p = root / "pressure" / "pressure" / f"{stem}_pressure.nc"
     s = root / "surface" / f"{stem}_surface_instant.nc"
-    return p, s
+    return _pressure_nc_path(root, date_yyyymmdd), s
 
 
 def _accum_surface_path(root: Path, date_yyyymmdd: str) -> Path:
@@ -140,8 +154,6 @@ class GunDongAdapter(DataAdapter):
 
     def load_blob(self, date_yyyymmdd: str, hour: int) -> Dict[str, np.ndarray]:
         p_nc, s_nc = _day_paths(self.root, date_yyyymmdd)
-        if not p_nc.is_file():
-            raise FileNotFoundError(p_nc)
         if not s_nc.is_file():
             raise FileNotFoundError(s_nc)
 
@@ -212,16 +224,16 @@ class GunDongAdapter(DataAdapter):
         }
 
     def list_dates(self) -> List[str]:
-        pdir = self.root / "pressure" / "pressure"
-        if not pdir.is_dir():
-            return []
-        out: List[str] = []
-        for p in sorted(pdir.glob("*_pressure.nc")):
-            name = p.name  # YYYY_MM_DD_pressure.nc
-            parts = name.split("_")
-            if len(parts) >= 3:
-                try:
-                    out.append(f"{parts[0]}{parts[1]}{parts[2]}")
-                except IndexError:
-                    pass
-        return out
+        collected: set[str] = set()
+        for pdir in (self.root / "pressure" / "pressure", self.root / "pressure"):
+            if not pdir.is_dir():
+                continue
+            for p in pdir.glob("*_pressure.nc"):
+                name = p.name
+                parts = name.split("_")
+                if len(parts) >= 3:
+                    try:
+                        collected.add(f"{parts[0]}{parts[1]}{parts[2]}")
+                    except IndexError:
+                        pass
+        return sorted(collected)

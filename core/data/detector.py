@@ -2,7 +2,7 @@
 数据格式自动探测器。
 
 检查规则（优先级从高到低）：
-1. 若 {root}/pressure/pressure/ 子目录存在且含 *_pressure.nc → gundong_20260324
+1. 若 {root}/pressure/pressure/ 或 {root}/pressure/ 下含 *_pressure.nc → gundong_20260324
 2. 若 {root}/ 直接含 *_pressure.nc 或 {root}/YYYY_MM/*_pressure.nc → era5_flat
 3. 否则抛出 ValueError
 """
@@ -24,10 +24,10 @@ _FORMAT_MAP = {
 def detect_format(root: Path) -> str:
     """返回格式名称字符串。"""
     root = Path(root)
-    # GunDong 特征：pressure/pressure/ 子目录
-    pdir = root / "pressure" / "pressure"
-    if pdir.is_dir() and any(pdir.glob("*_pressure.nc")):
-        return "gundong_20260324"
+    # GunDong：嵌套 pressure/pressure/ 或扁平 pressure/
+    for pdir in (root / "pressure" / "pressure", root / "pressure"):
+        if pdir.is_dir() and any(pdir.glob("*_pressure.nc")):
+            return "gundong_20260324"
 
     # ERA5 flat：根目录或月份子目录含 *_pressure.nc
     if any(root.glob("*_pressure.nc")):

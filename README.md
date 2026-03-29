@@ -411,7 +411,7 @@ MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=
 - 多进程滚动推理偶发 `SIGABRT` / `local_rank` 失败（FuXi 等 ONNX 模型）
   - 实现上已对 `WORLD_SIZE>1` 仅 **rank0** 启用 `rocm-smi` 硬件监控，并对各 `LOCAL_RANK` **错峰**（默认约 `8s×LOCAL_RANK`，环境变量 `ROLLING_ORT_STAGGER_SEC` 可调）再加载模型；仍失败时请 **`WORLD_SIZE=1`** 或使用离线 `run_eval_npy`，_DCU 上多进程并行 FuXi 可能仍不稳定_
 - `跳过 20260303T12（缺少起报或面场文件，未执行滚动推理）`
-  - 表示 `pressure/pressure/YYYY_MM_DD_pressure.nc` 或对应 `surface_instant.nc` 在数据根下**不存在**，不会进入「开始滚动推理」循环；请用 `adapter.list_dates()` 或目录列表核对 **实际有数据的日期** 再设 `DATE_RANGE`
+  - 表示 `pressure/pressure/` 与 `pressure/` 下均未找到当日的 `YYYY_MM_DD_pressure.nc`，或对应 `surface_instant.nc` **不存在**，不会进入「开始滚动推理」循环；请用 `adapter.list_dates()` 或目录列表核对 **实际有数据的日期** 再设 `DATE_RANGE`
 - FuXi 首步日志里 `tp_mean` 接近 0
   - 说明 blob 仍无可用降水：instant 无 tp **且** 不存在可读 accum、或 `tp_fallback` 为 `zero` 且填零
   - `gundong_20260324` 在提供同日 `*_surface_accum.nc` 时应出现非零 `tp_mean`（除非实况确为无降水）
