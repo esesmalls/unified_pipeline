@@ -104,18 +104,11 @@ def _msl_netcdf_to_pa(msl_var, arr: np.ndarray) -> np.ndarray:
 
 def _tp_netcdf_to_6h(tp_var, arr: np.ndarray) -> np.ndarray:
     """
-    TP 转换到 6h 累计（surface_tp_6h）统一单位：
-    - 常见 ERA5 tp 为 m，转换为 mm
-    - 若已是 mm，保持不变
+    TP 转换到 6h 累计（surface_tp_6h）单位策略：
+    - 保持数据源原始单位（通常 ERA5 为 m）
+    - 与 zforecast/FuXi 既有链路对齐，避免量纲放大
     """
-    try:
-        u = str(getattr(tp_var, "units", "") or "").strip().lower()
-    except Exception:
-        u = ""
-    a = np.asarray(arr, dtype=np.float32)
-    if u in ("m", "meter", "meters", "metre", "metres"):
-        return (a * 1000.0).astype(np.float32)
-    return a
+    return np.asarray(arr, dtype=np.float32)
 
 
 def _find_hour_index(ts_sec: np.ndarray, hour: int) -> int:

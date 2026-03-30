@@ -32,6 +32,8 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 - Rolling: intersect `--date-range` with `adapter.list_dates()` before loading models; clarify skip logs when pressure/surface files are missing; default ORT init stagger 8s/LR (override `ROLLING_ORT_STAGGER_SEC`).
 - Rolling: `torchrun` multi-process uses rank0-only hardware monitor and per-`LOCAL_RANK` startup staggering to reduce ROCm/ONNX concurrent-init SIGABRT risk.
 - Data: `gundong_20260324` adapter reads `tp` from `surface/*_surface_accum.nc` when instant surface has no precipitation variable, populating `surface_tp_6h` for FuXi 70ch input.
+- Fix: `gundong_20260324` adapter now keeps `surface_tp_6h` in source-native units (ERA5 commonly `m`) instead of converting `m -> mm`, aligning FuXi TP input scale with `zforecast.py`.
+- Analysis: compared historical jobs `110330301` (`tp_mean=0`) and `110494967` (`tp_mean=0.101713`) for `20260303T12`; FuXi metrics CSV rows and forecast NPY outputs (`t2m/u10/v10/msl`) are byte-identical (`max_abs_diff=0`), indicating no observable TP impact on evaluated variables for this case.
 - CI: `pr-gate` installs `[requirements-ci.txt](requirements-ci.txt)` before the sanity import step so GitHub Actions has the same minimal third-party imports as local entrypoints (`netCDF4` for `cepri_loader`, `onnxruntime` for FuXi, `numpy<2` for ORT ABI compatibility, etc.), without requiring the full e2s conda stack.
 - CI: `checkout` uses `fetch-depth: 0` and the changelog gate diffs `pull_request.base.sha` vs `head.sha` so git no longer exits 128 on shallow merge checkouts.
 - Docs: optimize README architecture mermaid diagram for clarity and add README-first rule to AGENTS.md.

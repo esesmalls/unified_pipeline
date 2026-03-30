@@ -215,7 +215,8 @@ unified_pipeline/
 - 当前内置数据源：
   - `test_era5`（`era5_flat`）
   - `gundong_20260324`（`gundong_20260324`）
-    - 面场默认读 `surface/YYYY_MM_DD_surface_instant.nc`；若其中无 `tp`/`total_precipitation` 等，适配器会**在同日**尝试 `surface/YYYY_MM_DD_surface_accum.nc` 中的 `tp`，写入 blob 的 `surface_tp_6h`（FuXi 70 通道第 69 路），单位经 `_tp_netcdf_to_6h` 与 instant 一致处理。
+    - 面场默认读 `surface/YYYY_MM_DD_surface_instant.nc`；若其中无 `tp`/`total_precipitation` 等，适配器会**在同日**尝试 `surface/YYYY_MM_DD_surface_accum.nc` 中的 `tp`，写入 blob 的 `surface_tp_6h`（FuXi 70 通道第 69 路）。
+    - `surface_tp_6h` 保持 NetCDF 原始单位（常见 ERA5 为 `m`），用于与 `zforecast.py` 的 FuXi 输入量纲保持一致。
 
 ### `config/defaults.yaml`
 
@@ -423,6 +424,9 @@ MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=
 - FuXi 首步日志里 `tp_mean` 接近 0
   - 说明 blob 仍无可用降水：instant 无 tp **且** 不存在可读 accum、或 `tp_fallback` 为 `zero` 且填零
   - `gundong_20260324` 在提供同日 `*_surface_accum.nc` 时应出现非零 `tp_mean`（除非实况确为无降水）
+- FuXi `tp_mean` 不同但评估结果完全一致
+  - 已复核历史作业 `110330301`（`tp_mean=0`）与 `110494967`（`tp_mean=0.101713`）：两者 `timeseries_metrics_20260303T12.csv` 中 FuXi 行完全一致，且 `FuXi/ERA5_6H/{t2m,u10,v10,msl}_20260303T12.npy` 字节级一致（`max_abs_diff=0`）。
+  - 这说明当前模型/权重在该样本上对 TP 通道扰动未体现到评估变量（`t2m/u10/v10/msl`）；问题不在评估脚本本身。
 
 ## 12. 扩展指南
 
