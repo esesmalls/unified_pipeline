@@ -23,6 +23,13 @@ This repository enforces a branch-first workflow for all feature work by any age
 11. If code behavior and `README.md` are inconsistent, update `README.md` in the same PR before (or together with) the code change.
 12. For newly added models or major model-path refactors, append/update that model's configuration flow in `README.md` (input adapter, channel mapping, wrapper step strategy, config keys).
 
+## Cluster submit scripts (this repository only)
+
+These rules apply to work under this repo’s `scripts/` and Slurm submission patterns documented here. They do not govern other repositories or ad-hoc cluster usage outside this project.
+
+13. Prefer **extending** existing `scripts/submit_*.sh` (environment variables, documented in `README.md`) over adding new shell wrappers.
+14. Add a **new** `scripts/*.sh` only when introducing a genuinely new Slurm entrypoint or cluster workflow that cannot map cleanly onto `submit_verify.sh`, `submit_rolling.sh`, or `submit_evaluate.sh`; in that case, document the script and when to use it in `README.md`.
+
 ## Commit and Push Pattern
 
 1. `git switch -c feature/<topic>`

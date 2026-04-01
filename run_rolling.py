@@ -169,6 +169,16 @@ def main():
         help="评估指标（默认 W-MAE W-RMSE）",
     )
 
+    # ---- 真值数据源 ----
+    ap.add_argument(
+        "--truth-source", default=None,
+        help=(
+            "评估/对比图使用的真值数据源（config/data.yaml key 或路径）。"
+            "默认与 --data-source 一致。"
+            "示例：--data-source ecmwf_init --truth-source gundong_20260324"
+        ),
+    )
+
     # ---- 硬件/配置 ----
     ap.add_argument(
         "--device", default="auto",
@@ -202,6 +212,16 @@ def main():
     ap.add_argument(
         "--monitor-interval", type=int, default=30,
         help="硬件监控轮询间隔（秒，默认 30）",
+    )
+
+    # ---- 时间统计 ----
+    ap.add_argument(
+        "--no-cpu-timing", action="store_true",
+        help="禁用进程 CPU 时间统计（默认开启）",
+    )
+    ap.add_argument(
+        "--no-gpu-timing", action="store_true",
+        help="禁用 GPU/DCU 设备区间时间统计（默认开启；GPU 不可用时自动无操作）",
     )
 
     args = ap.parse_args()
@@ -241,6 +261,9 @@ def main():
             models_cfg_path=args.models_config,
             data_cfg_path=args.data_config,
             parallel_mode=args.parallel_mode,
+            truth_source=args.truth_source,
+            enable_cpu_timing=not args.no_cpu_timing,
+            enable_gpu_timing=not args.no_gpu_timing,
         )
 
 

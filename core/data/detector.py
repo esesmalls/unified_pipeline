@@ -20,6 +20,12 @@ _FORMAT_MAP = {
     "gundong_20260324": GunDongAdapter,
 }
 
+try:
+    from .ecmwf_init_grib_adapter import ECMWFInitGribAdapter
+    _FORMAT_MAP["ecmwf_init_grib"] = ECMWFInitGribAdapter
+except ImportError:
+    pass  # pygrib not installed; format unavailable but won't break others
+
 
 def detect_format(root: Path) -> str:
     """返回格式名称字符串。"""
@@ -28,6 +34,10 @@ def detect_format(root: Path) -> str:
     for pdir in (root / "pressure" / "pressure", root / "pressure"):
         if pdir.is_dir() and any(pdir.glob("*_pressure.nc")):
             return "gundong_20260324"
+
+    # ECMWF/GFS init GRIB1：G_*_fh_*.grib1
+    if any(root.glob("G_*_fh_*.grib1")):
+        return "ecmwf_init_grib"
 
     # ERA5 flat：根目录或月份子目录含 *_pressure.nc
     if any(root.glob("*_pressure.nc")):
@@ -38,7 +48,7 @@ def detect_format(root: Path) -> str:
     raise ValueError(
         f"无法自动识别 {root} 的数据格式。\n"
         "请在 config/data.yaml 中明确设置 format 字段，\n"
-        "或通过 --data-format 参数指定（era5_flat | gundong_20260324）。"
+        "或通过 --data-format 参数指定（era5_flat | gundong_20260324 | ecmwf_init_grib）。"
     )
 
 

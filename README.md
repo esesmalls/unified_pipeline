@@ -12,8 +12,8 @@
 
 通过统一的“模型注册 + 数据适配 + 通道映射 + 流水线编排”架构，解耦：
 
-- 数据格式（`era5_flat` / `gundong_20260324` / 可扩展）
-- 模型实现（Pangu/FengWu/FuXi/GraphCast/GraphCast_CS）
+- 数据格式（`era5_flat` / `gundong_20260324` / `ecmwf_init_grib` / 可扩展）
+- 模型实现（Pangu/FengWu/FuXi/GraphCast/GraphCast_CS/GC_Official_Oper/GC_Stepwise）
 - 运行场景（verify / rolling / offline eval）
 
 ### 快速阅读导航（建议）
@@ -107,6 +107,7 @@ unified_pipeline/
 │   │   ├── detector.py
 │   │   ├── era5_adapter.py
 │   │   ├── gundong_adapter.py
+│   │   ├── ecmwf_init_grib_adapter.py
 │   │   ├── channel_mapper.py
 │   │   └── surface_units.py
 │   ├── models/
@@ -115,7 +116,9 @@ unified_pipeline/
 │   │   ├── pangu_model.py
 │   │   ├── fengwu_model.py
 │   │   ├── fuxi_model.py
-│   │   └── graphcast_model.py
+│   │   ├── graphcast_model.py
+│   │   ├── graphcast_official_operational_model.py
+│   │   └── graphcast_official_operational_stepwise_model.py
 │   ├── evaluation/
 │   │   └── metrics.py
 │   └── monitoring/
@@ -131,7 +134,8 @@ unified_pipeline/
 │   ├── submit_verify.sh
 │   ├── submit_rolling.sh
 │   ├── submit_evaluate.sh
-│   └── submit_gundong_20260303_5models.sh
+│   ├── submit_gundong_20260303_5models.sh
+│   └── compare_stepwise_vs_cache.py
 ├── run_verify.py
 ├── run_rolling.py
 ├── run_eval_npy.py
@@ -199,6 +203,23 @@ unified_pipeline/
   - `fuxi`
   - `graphcast`
   - `graphcast_cs`
+  - `graphcast_official_operational`（官方 JAX GraphCast operational 参数，0.25°/13层/mesh2to6）
+  - `graphcast_official_operational_stepwise`（实验：进程内逐步 JAX，与 cache-based 版双轨并存）
+- `graphcast_official_operational` 特有配置：
+  - `type: jax_official`
+  - `rollout_script`：指向 `ZK_Models/run_graphcast_official_rollout_gundong.py`
+  - `assets_root`：官方参数/统计量/数据集目录
+  - `param_file`：operational `.npz` 参数文件名
+  - `embed_python`：e2s JAX embed 虚拟环境的 Python 路径
+  - `rollout_cache_dir`：预计算 NPY 缓存目录
+  - 该模型采用"预计算全量 rollout → 逐步读取缓存"策略，无需 JAX 在主进程内运行
+- `graphcast_official_operational_stepwise` 特有配置（**实验**）：
+  - `type: jax_official_stepwise`
+  - `assets_root`、`param_file`、`gundong_root`：与 cache-based 版本相同的参数/数据路径
+  - 该模型在进程内加载官方 JAX checkpoint 并构建 jitted predictor，每次 `step()` 执行一步前向推理
+  - **不依赖**子进程、`rollout_cache_dir` 或 `embed_python`；但要求主进程能导入 JAX 和 `graphcast` 包（即 e2s embed 的 site-packages 在 `sys.path` 中）
+  - **实验状态**：JAX 与 PyTorch/ONNX 在同一进程同一 GPU 共存的稳定性尚待集群验证，请先单模型验证后再纳入多模型流程
+  - 验证方法：`scripts/compare_stepwise_vs_cache.py` 可对比 stepwise 输出与 cache baseline 的逐变量差异
 - `pangu` 支持调度策略：
   - `scheduler_mode: six_hour_only`：仅使用 6h 模型（当前默认，便于和历史脚本对齐复核）
   - `scheduler_mode: hybrid_24h`：`+24h/+48h/...` 使用 24h 模型，其余使用 6h 模型
@@ -217,6 +238,12 @@ unified_pipeline/
   - `gundong_20260324`（`gundong_20260324`）
     - 面场默认读 `surface/YYYY_MM_DD_surface_instant.nc`；若其中无 `tp`/`total_precipitation` 等，适配器会**在同日**尝试 `surface/YYYY_MM_DD_surface_accum.nc` 中的 `tp`，写入 blob 的 `surface_tp_6h`（FuXi 70 通道第 69 路）。
     - `surface_tp_6h` 保持 NetCDF 原始单位（常见 ERA5 为 `m`），用于与 `zforecast.py` 的 FuXi 输入量纲保持一致。
+  - `ecmwf_init`（`ecmwf_init_grib`）
+    - ECMWF/GFS 初始场 GRIB1 文件，命名 `G_YYYYMMDDHH_fh_{0,1}.grib1`
+    - 需要 `pygrib` 依赖（当前默认 conda 环境已包含）
+    - 高空变量：`z`(geopotential, m²/s²) 或 `gh`(→z ×9.80665) / `t` / `u` / `v` / `q`(specific humidity) 或 `r`(→q)；面场：`2t` / `10u` / `10v` / `msl`
+    - TP（总降水）优先从 `fh_1` 读取，缺失则填零
+    - 自动探测：目录下含 `G_*_fh_*.grib1` 即被识别为此格式
 
 ### `config/defaults.yaml`
 
@@ -248,6 +275,7 @@ conda activate torch2.4_dtk25.04_cp310_e2s
 - `onnxruntime`
 - `torch`
 - `netCDF4`（xarray 读取 NC 常见后端）
+- `pygrib`（ECMWF/GFS GRIB1 初始场读取，仅 `ecmwf_init_grib` 格式需要）
 
 集群脚本（`submit_verify.sh` / `submit_rolling.sh` / `submit_evaluate.sh`）默认使用上述 conda 环境；可通过环境变量 `CONDA_ENV` 覆盖。
 
@@ -298,7 +326,42 @@ python ZK_Models/unified_pipeline/run_rolling.py \
 - `--skip-plots`：跳过对比图
 - `--save-nc`：保存逐步 NC
 - `--parallel-mode auto|date|model`：多卡分片策略
+- `--truth-source`：评估/对比图使用的真值数据源（默认同 `--data-source`）
 - `--lead-step` 必须能被模型步长整除，否则会直接报错退出（避免错配推理）
+
+**时间统计开关**（默认两者均开启，日志中以 `[timing]` 为前缀）：
+
+- `--no-cpu-timing`：禁用进程 CPU 时间统计（基于 `time.process_time()`，统计用户态+内核态，不含设备侧内核执行时间）
+- `--no-gpu-timing`：禁用 GPU/DCU 设备区间时间统计（基于 `torch.cuda.Event`，在 ROCm/DCU 上通过 HIP 后端记录同一流上的设备时间轴跨度）
+
+两者相互独立。GPU 统计在 `torch.cuda.is_available()` 为 False（纯 CPU 环境）时自动跳过，不影响 CPU 统计。每模型完成滚动段后日志打印该模型帧数与总量，全部模型结束后打印汇总表（各模型平均 CPU/帧、平均 GPU/帧）。统计范围**不含**权重加载与 `unload()`，仅计「按日期/lead 推理+写帧」段。
+
+使用 ECMWF 初始场 GRIB1 数据跑滚动推理（真值使用同源初始场参考）：
+
+```bash
+python ZK_Models/unified_pipeline/run_rolling.py \
+  --models pangu fengwu fuxi graphcast graphcast_cs \
+  --data-source ecmwf_init \
+  --date-range 20260327 \
+  --init-hour 12 \
+  --lead-step 6 \
+  --max-lead 240 \
+  --enable-eval --skip-plots
+```
+
+使用 ECMWF 初始场推理、ERA5 真值评估：
+
+```bash
+python ZK_Models/unified_pipeline/run_rolling.py \
+  --models pangu fengwu fuxi graphcast graphcast_cs \
+  --data-source ecmwf_init \
+  --truth-source gundong_20260324 \
+  --date-range 20260327 \
+  --init-hour 12 \
+  --lead-step 6 \
+  --max-lead 240 \
+  --enable-eval --skip-plots
+```
 
 ### 7.4 已有 NPY 的离线评估（推荐）
 
@@ -335,6 +398,16 @@ TIME_TAG=20260308T12 sbatch scripts/submit_evaluate.sh
 ```
 
 `scripts/submit_gundong_20260303_5models.sh` 已标记为兼容用途（deprecated），不建议新任务继续使用。
+
+**6 模型滚动推理（含官方 JAX GraphCast operational）**仍用 `submit_rolling.sh`：当流水线轮到 `graphcast_official_operational` 时，模型包装类会在 `init_state()` 内按需子进程调用官方 rollout（缓存写入 `rollout_cache_dir`），无需单独 Phase 1 脚本。示例：
+
+```bash
+MODELS="pangu fengwu fuxi graphcast graphcast_cs graphcast_official_operational" \
+  DATA_SOURCE=gundong_20260324 DATE_RANGE=20260303 INIT_HOUR=12 \
+  LEAD_STEP=6 MAX_LEAD=240 ENABLE_EVAL=1 SKIP_PLOTS=1 \
+  OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_6models \
+  sbatch -J zk_6models scripts/submit_rolling.sh
+```
 
 脚本参数支持环境变量覆盖，例如：
 
@@ -556,6 +629,65 @@ python run_verify.py --models <new_slug> --data-source test_era5 --date 20260308
 - **模型代码**：仍复用 `core/models/graphcast_model.py`（注册名不同，类相同）
 - **步进策略**：与 GraphCast 一致，取 `dt`。
 - **修改时优先检查**：配置路径有效性、metadata 与 checkpoint 对齐，而不是另写模型类。
+
+#### F) `graphcast_official_operational`
+
+- **配置入口**：`config/models.yaml -> models.graphcast_official_operational`
+  - 关键键：`rollout_script`、`assets_root`、`param_file`、`embed_python`、`rollout_cache_dir`
+- **包装类**：`core/models/graphcast_official_operational_model.py`
+  - 采用"预计算 + 缓存读取"策略，与其他模型的逐步推理不同
+  - `load()`：仅存储配置（不加载 JAX 模型）
+  - `init_state()`：从 `rollout_cache_dir` 定位预计算 NPY，若不存在则通过子进程触发官方 rollout
+  - `step()`：从缓存的 NPY 栈中返回下一步预测
+  - **耗时说明**：`load()` 很轻；若缓存未命中，日志里在「开始滚动推理」之后会出现较长静默期，实为子进程一次性跑完整段 JAX rollout（与 operational 分辨率/步数有关），完成后逐步 `step()` 会很快。复用同一 `rollout_cache_dir` 可跳过该阶段。
+  - **子进程之后仍有间隔**：JAX 只跑那一次；rolling 仍要对每个 lead 读真值 NC、写统一 NPY、可选内嵌评估，且 `rolling_pipeline` 默认约每 8 步打一条 `lead=…h done`，故相邻两条日志之间是 **8 步的 I/O/评估**，不是再次 rollout。
+- **与 PyTorch GraphCast 的关系**：两者独立——PyTorch 版本 (`graphcast` / `graphcast_cs`) 使用 `onescience` 包内的 `GraphCastNet`；官方版本使用 DeepMind JAX `graphcast` 包 + operational `.npz` 参数
+- **提交流程**：与其它模型相同，使用 `scripts/submit_rolling.sh`；首次某 `init_tag` 若缓存目录无 NPY，会在作业内自动子进程跑官方 JAX rollout（需计算节点上 DTK + `embed_python` 可用）
+- **修改时优先检查**：`run_graphcast_official_rollout_gundong.py` 的输出变量集合需与 `_SURFACE_VARS` 一致（当前为 u10/v10/t2m/msl）
+
+#### G) `graphcast_official_operational_stepwise`（实验）
+
+- **配置入口**：`config/models.yaml -> models.graphcast_official_operational_stepwise`
+  - 关键键：`assets_root`、`param_file`、`gundong_root`
+- **包装类**：`core/models/graphcast_official_operational_stepwise_model.py`
+  - 进程内逐步 JAX 推理，与其他模型的 `step()` 契约完全一致
+  - `load()`：加载 checkpoint、stats，构建 & JIT predictor（首次 JIT 含编译耗时）
+  - `init_state()`：从 gundong 数据构造 `example_batch`，调用 `extract_inputs_targets_forcings` 得到初始 `inputs/targets_template/forcings`，装入 `ModelState`
+  - `step()`：切单步 `targets_template` 与 `forcings`，调用 jitted predictor，用 `_get_next_inputs` 更新 rolling input 窗口，转出 unified blob
+  - `unload()`：释放 JAX predictor 与参数
+- **与 cache-based 版本的关系**：双轨并存——cache-based (`graphcast_official_operational`) 是稳定生产路径，stepwise 是实验路径；两者使用相同的官方参数和数据，但执行方式不同
+- **风险**：
+  - JAX 与 PyTorch/ONNX 在同一进程同一 GPU 共存尚待集群验证
+  - stepwise 状态更新是否与官方 `rollout.chunked_prediction_generator` 完全对齐需通过 `compare_stepwise_vs_cache.py` 验证
+- **验证命令**：
+  ```bash
+  MODELS=graphcast_official_operational_stepwise \
+    DATA_SOURCE=gundong_20260324 DATE_RANGE=20260303 INIT_HOUR=12 \
+    LEAD_STEP=6 MAX_LEAD=240 SKIP_PLOTS=1 \
+    OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_stepwise \
+    sbatch -J zk_stepwise scripts/submit_rolling.sh
+
+  python scripts/compare_stepwise_vs_cache.py \
+    --init-tag 20260303T12 \
+    --baseline-dir /public/share/aciwgvx1jd/gc_oper_rollout_cache/GraphCast_official/ERA5_6H \
+    --stepwise-dir /public/share/aciwgvx1jd/GunDong_Infer_result_12h_stepwise/GC_Stepwise/ERA5_6H
+  ```
+
+#### H) `ecmwf_init_grib`（ECMWF/GFS 初始场 GRIB1）
+
+- **配置入口**：`config/data.yaml -> sources.ecmwf_init`
+  - 关键键：`root`（含 `G_YYYYMMDDHH_fh_*.grib1` 的目录）、`format: ecmwf_init_grib`
+- **适配器**：`core/data/ecmwf_init_grib_adapter.py`（`ECMWFInitGribAdapter`）
+  - 使用 `pygrib` 读取 GRIB1，合并 `fh_0`（分析场）与 `fh_1`（可选，含累积降水）
+  - 高空变量 shortName：`z`(geopotential) 或 `gh`(×9.80665)、`t`、`u`、`v`；湿度优先 `q`，缺失则从 `r`（RH）+ T 计算
+  - 面场 shortName：`2t` → t2m、`10u` → u10、`10v` → v10、`msl|mslet|prmsl` → msl
+  - TP 优先从 `fh_0` 读取，缺失试 `fh_1`，仍缺则填零
+  - 自动处理 lat 方向（N→S）和 lon 范围（-180..180 → 0..360）
+  - 若 GRIB 分辨率与标准 0.25°(721×1440) 不同（如 0.1° 的 1801×3600），自动双线性降采样
+  - 压力层自动重排/插值到 PANGU_LEVELS（内存优化：逐变量处理，避免全量载入 OOM）
+- **与 FuXi 参考 `make_gfs_input.py` 的关系**：变量映射和 `gh×9.8` 约定一致，但本适配器输出统一 blob（含 `q` 而非 `r`），由 `channel_mapper` 在模型侧再转换
+- **真值评估**：`--truth-source` 可切换评估真值来源；若 `truth_source=ecmwf_init`，则使用同源初始场按 `valid_time` 匹配（仅覆盖有分析场的时次）
+- **修改时优先检查**：`ecmwf_init_grib_adapter.py` 的 shortName 候选列表和 `_rh_to_q` 转换
 
 ### 12.3 新增数据格式
 

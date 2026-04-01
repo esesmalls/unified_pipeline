@@ -103,7 +103,8 @@ def main():
     )
     ap.add_argument(
         "--models", nargs="+",
-        default=["FengWu", "GraphCast", "FuXi", "PanGu"],
+        default=["FengWu", "GraphCast", "FuXi", "PanGu", "GraphCast_CS",
+                 "GC_Official_Oper", "GC_Stepwise"],
         help="模型目录名（大小写需与结果目录一致）",
     )
     ap.add_argument(

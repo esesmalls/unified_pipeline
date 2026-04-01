@@ -84,6 +84,31 @@ models:
     surface_channels: ["10m_u_component_of_wind", "10m_v_component_of_wind",
                        "2m_temperature", "mean_sea_level_pressure"]
 
+  graphcast_official_operational:
+    enabled: true
+    type: jax_official
+    display_name: "GC_Official_Oper"
+    rollout_script: "${ZK_ROOT}/run_graphcast_official_rollout_gundong.py"
+    assets_root: "${ZK_ROOT}/graphcast_official_assets"
+    param_file: "graphcast_params_GraphCast_operational - ERA5-HRES 1979-2021 - resolution 0.25 - pressure levels 13 - mesh 2to6 - precipitation output only.npz"
+    gundong_root: "/public/share/aciwgvx1jd/20260324"
+    embed_python: "${ZK_ROOT}/.e2s_official_embed/bin/python"
+    rollout_cache_dir: "/public/share/aciwgvx1jd/gc_oper_rollout_cache"
+    step_hours: 6
+    max_lead_hours: 240
+    surface_channels: ["u10", "v10", "t2m", "msl"]
+
+  graphcast_official_operational_stepwise:
+    enabled: true
+    type: jax_official_stepwise
+    display_name: "GC_Stepwise"
+    assets_root: "${ZK_ROOT}/graphcast_official_assets"
+    param_file: "graphcast_params_GraphCast_operational - ERA5-HRES 1979-2021 - resolution 0.25 - pressure levels 13 - mesh 2to6 - precipitation output only.npz"
+    gundong_root: "/public/share/aciwgvx1jd/20260324"
+    step_hours: 6
+    max_lead_hours: 240
+    surface_channels: ["u10", "v10", "t2m", "msl"]
+
   # ------- 扩展占位：未来新模型示例 -------
   # mymodel:
   #   enabled: false

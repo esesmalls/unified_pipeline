@@ -39,12 +39,16 @@ from core.data.channel_mapper import extract_surface_vars
 from core.data.surface_units import harmonize_surface_pair
 from core.models import build_registry
 from core.evaluation.metrics import MetricsAccumulator
+from core.monitoring import RollingInferenceTiming
 from zk_io.npy_writer import NpyStackWriter
 from zk_io.nc_writer import write_step_nc
 from zk_io.plot_utils import plot_compare
 
 # 与 evaluate_models.py 中 MODELS 顺序一致，用于多模型时序图配色/图例
-_EVAL_MODEL_ORDER = ["PanGu", "FengWu", "FuXi", "GraphCast", "GraphCast_CS"]
+_EVAL_MODEL_ORDER = [
+    "PanGu", "FengWu", "FuXi", "GraphCast", "GraphCast_CS",
+    "GC_Official_Oper", "GC_Stepwise",
+]
 
 
 def _progress(msg: str) -> None:
@@ -140,30 +144,37 @@ def run_rolling(
     models_cfg_path: Optional[Path] = None,
     data_cfg_path: Optional[Path] = None,
     parallel_mode: str = "auto",
+    truth_source: Optional[str] = None,
+    enable_cpu_timing: bool = True,
+    enable_gpu_timing: bool = True,
 ) -> None:
     """
     滚动推理主函数。
 
     Args:
-        model_names:    模型名称列表（如 ["fengwu","fuxi"]）
-        data_source:    数据源名称或路径
-        date_range:     日期 'yyyymmdd' 或范围 'yyyymmdd:yyyymmdd'
-        init_hour:      起报时刻 UTC（默认 12）
-        lead_step:      步长小时（默认 6）
-        max_lead:       总预报时长小时（默认 240）
-        variables:      地表变量列表（None=使用模型默认全部地表变量）
-        output_root:    结果根目录（兼容 GunDong_Infer_result_12h 布局）
-        device:         推理设备
-        skip_plots:     跳过逐步对比图
-        save_nc:        是否保存 per-step NetCDF（Pangu/GraphCast 推荐开启）
-        enable_eval:    是否开启内嵌定量评估（W-RMSE/W-MAE CSV + 时序图）
-        save_diff:      是否保存 diff npy 文件（需 enable_eval=True）
-        save_diff_nc:   是否保存 diff nc 文件（需 enable_eval=True）
-        metrics:        指标列表（None=["W-MAE","W-RMSE"]）
-        parallel_mode:  多卡并行策略（auto | date | model）
-                          auto  — 日期数 >= WORLD_SIZE → date 模式；否则 → model 模式
-                          date  — 每 rank 处理不同日期（多日任务推荐）
-                          model — 每 rank 处理不同模型（单日多模型推荐）
+        model_names:        模型名称列表（如 ["fengwu","fuxi"]）
+        data_source:        数据源名称或路径
+        date_range:         日期 'yyyymmdd' 或范围 'yyyymmdd:yyyymmdd'
+        init_hour:          起报时刻 UTC（默认 12）
+        lead_step:          步长小时（默认 6）
+        max_lead:           总预报时长小时（默认 240）
+        variables:          地表变量列表（None=使用模型默认全部地表变量）
+        output_root:        结果根目录（兼容 GunDong_Infer_result_12h 布局）
+        device:             推理设备
+        skip_plots:         跳过逐步对比图
+        save_nc:            是否保存 per-step NetCDF（Pangu/GraphCast 推荐开启）
+        enable_eval:        是否开启内嵌定量评估（W-RMSE/W-MAE CSV + 时序图）
+        save_diff:          是否保存 diff npy 文件（需 enable_eval=True）
+        save_diff_nc:       是否保存 diff nc 文件（需 enable_eval=True）
+        metrics:            指标列表（None=["W-MAE","W-RMSE"]）
+        parallel_mode:      多卡并行策略（auto | date | model）
+                              auto  — 日期数 >= WORLD_SIZE → date 模式；否则 → model 模式
+                              date  — 每 rank 处理不同日期（多日任务推荐）
+                              model — 每 rank 处理不同模型（单日多模型推荐）
+        truth_source:       评估/对比真值数据源（None=同 data_source）
+        enable_cpu_timing:  统计每模型滚动段进程 CPU 时间及帧均值（默认开启）
+        enable_gpu_timing:  统计每模型滚动段 GPU/DCU 设备区间时间及帧均值（默认开启；
+                              GPU 不可用时自动跳过，不影响 CPU 统计）
     """
     if models_cfg_path is None:
         models_cfg_path = _ZK_ROOT / "config" / "models.yaml"
@@ -202,6 +213,17 @@ def run_rolling(
         use_monthly_subdir=src_cfg.get("use_monthly_subdir", False),
     )
 
+    # 真值适配器：默认与推理数据源一致，可通过 truth_source 切换
+    if truth_source and truth_source != data_source:
+        t_root, t_fmt, t_cfg = _load_data_source(truth_source, data_cfg_path)
+        _progress(f"真值数据源: {t_root}（格式: {t_fmt or '自动探测'}）")
+        truth_adapter = get_adapter(
+            t_root, fmt=t_fmt,
+            use_monthly_subdir=t_cfg.get("use_monthly_subdir", False),
+        )
+    else:
+        truth_adapter = adapter
+
     # 与适配器扫描到的有.pressure 文件的日期取交集，避免 load_blob 反复失败却仍先加载大模型
     try:
         avail_dates = set(adapter.list_dates())
@@ -238,6 +260,13 @@ def run_rolling(
     valid_times_by_tag: Dict[str, Dict[Tuple[str, str], List]] = {}
     lon_by_tag: Dict[str, np.ndarray] = {}
 
+    timing = RollingInferenceTiming(
+        enable_cpu=enable_cpu_timing,
+        enable_gpu=enable_gpu_timing,
+    )
+    if enable_gpu_timing and not timing.gpu_active:
+        _progress("[timing] GPU 计时已请求但当前环境无可用 GPU/DCU，将仅统计 CPU 时间")
+
     # ---------------------------------------------------------------
     # 外层循环：模型；内层循环：日期
     # 每个模型独占一次 VRAM：加载 → 跑完所有日期 → 卸载 → 下一个模型
@@ -250,6 +279,8 @@ def run_rolling(
             "fuxi": "FuXi",
             "graphcast": "GraphCast",
             "graphcast_cs": "GraphCast_CS",
+            "graphcast_official_operational": "GC_Official_Oper",
+            "graphcast_official_operational_stepwise": "GC_Stepwise",
         }.get(model_name.lower(), model_name)
 
         # 逐模型加载
@@ -259,6 +290,10 @@ def run_rolling(
             _progress(f"[{display_name}] 加载失败，跳过")
             continue
         model = registry.get(model_name)
+
+        if hasattr(model, '_data_adapter'):
+            model._data_adapter = adapter
+
         sfc_vars = variables if variables else model.get_surface_var_names()
         step_h = model.get_step_hours()
         if lead_step % step_h != 0:
@@ -269,6 +304,7 @@ def run_rolling(
         is_pangu = model_name.lower() == "pangu"
 
         try:
+            timing.begin_model(display_name)
             for date in dates:
                 init_dt = datetime(int(date[:4]), int(date[4:6]), int(date[6:8]), init_hour)
                 init_tag = init_dt.strftime("%Y%m%dT%H")
@@ -284,6 +320,12 @@ def run_rolling(
 
                 prev_dt = init_dt - timedelta(hours=step_h)
                 prev_blob = adapter.load_blob_safe(prev_dt.strftime("%Y%m%d"), prev_dt.hour)
+                if prev_blob is None:
+                    _progress(
+                        f"[{display_name}] t-{step_h}h ({prev_dt.strftime('%Y%m%d %H')}Z) "
+                        f"数据不存在，使用 t=0 初始场作为 prev_blob 替代"
+                    )
+                    prev_blob = init_blob
 
                 lat = init_blob.get("lat", np.linspace(90.0, -90.0, 721, dtype=np.float32))
                 lon = init_blob.get("lon", np.arange(0.0, 360.0, 0.25, dtype=np.float32))
@@ -294,7 +336,7 @@ def run_rolling(
                 # 初始化模型状态
                 try:
                     state = model.init_state(init_blob, prev_blob=prev_blob, init_dt=init_dt)
-                except ValueError as e:
+                except (ValueError, RuntimeError, FileNotFoundError) as e:
                     _progress(f"[{display_name}] init_state 失败: {e}")
                     continue
 
@@ -327,10 +369,11 @@ def run_rolling(
 
                         current_lead = state.lead
                         valid_dt = init_dt + timedelta(hours=current_lead)
-                        truth_blob = adapter.load_blob_for_valid_time(valid_dt)
+                        truth_blob = truth_adapter.load_blob_for_valid_time(valid_dt)
 
                         pred_sfc = extract_surface_vars(state.blob, sfc_vars)
                         npy_writer.write_step(si, pred_sfc)
+                        timing.add_frames(1)
 
                         # NC 写出
                         if save_nc:
@@ -400,10 +443,26 @@ def run_rolling(
 
                 _progress(f"[{display_name}] 完成 {init_tag}")
 
+            cpu_s, gpu_s, frames, avg_cpu, avg_gpu = timing.end_model()
+            _parts = [
+                f"frames={frames}",
+                f"CPU={cpu_s:.2f}s",
+                f"CPU均/帧={avg_cpu:.3f}s" if avg_cpu is not None else "CPU均/帧=N/A",
+            ]
+            if gpu_s is not None:
+                _parts += [
+                    f"GPU={gpu_s:.2f}s",
+                    f"GPU均/帧={avg_gpu:.3f}s" if avg_gpu is not None else "GPU均/帧=N/A",
+                ]
+            _progress(f"[{display_name}] [timing] " + "  ".join(_parts))
+
         finally:
             # 无论推理是否成功都卸载，确保 VRAM 释放给下一个模型
             _progress(f"[{display_name}] 卸载模型，释放 VRAM...")
             model.unload()
+
+    for row in timing.summary_rows():
+        _progress(row)
 
     if enable_eval and acc_by_tag:
         for init_tag, acc in acc_by_tag.items():

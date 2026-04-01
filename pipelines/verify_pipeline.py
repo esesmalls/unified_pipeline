@@ -57,6 +57,8 @@ def _verify_out_label(model_slug: str) -> str:
         "fuxi": "FuXi",
         "graphcast": "GraphCast",
         "graphcast_cs": "GraphCast_CS",
+        "graphcast_official_operational": "GC_Official_Oper",
+        "graphcast_official_operational_stepwise": "GC_Stepwise",
     }.get(model_slug.lower(), model_slug)
 
 
