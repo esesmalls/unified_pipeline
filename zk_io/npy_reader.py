@@ -34,6 +34,8 @@ def load_pred_stack(path: Path, n_steps: int, h: int, w: int) -> np.ndarray:
     except ValueError:
         arr = np.memmap(str(path), dtype=np.float32, mode="r", shape=(n_steps, h, w))
     arr = np.asarray(arr, dtype=np.float32)
+    if arr.ndim > 3:
+        arr = arr[0]
     if arr.ndim == 2:
         arr = arr[np.newaxis, ...]
     return arr
