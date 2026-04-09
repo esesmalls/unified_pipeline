@@ -21,7 +21,7 @@ sources:
 
   ecmwf_init:
     format: ecmwf_init_grib              # → core/data/ecmwf_init_grib_adapter.py
-    root: "/public/share/aciwgvx1jd/ecmwf_init0/new_init/res"
+    root: "/public/share/aciwgvx1jd/ecmwf_init0/new_init"
     description: "ECMWF 初始场 GRIB1（G_YYYYMMDDHH_fh_{0,1}.grib1），pygrib 读取"
     default_pipeline: rolling
 
