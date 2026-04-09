@@ -19,8 +19,9 @@ init-first 目录布局（见 README §9）::
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------
@@ -101,3 +102,66 @@ def plot_dir(output_root: Path, init_tag: str, model_slug: str) -> Path:
 def eval_downscale_dir(output_root: Path, init_tag: str, max_lead: int) -> Path:
     """评估结果目录：{output_root}/{init_tag}/eval_{max_lead}h/"""
     return Path(output_root) / init_tag / f"eval_{max_lead}h"
+
+
+# ---------------------------------------------------------------
+# 迁移与工具函数（供 migrate_rolling_output_layout.py 使用）
+# ---------------------------------------------------------------
+
+_DISPLAY_TO_SLUG: Dict[str, str] = {v: k for k, v in SLUG_TO_DISPLAY.items()}
+
+# init_tag 正则：8位日期 + T + 2位小时，如 20260308T12
+_INIT_TAG_RE = re.compile(r"(\d{8}T\d{2})$")
+# 旧式 eval 目录名，如 eval_240h_20260308T12 或 eval_W-MAE_240h_20260308T12
+_LEGACY_EVAL_RE = re.compile(r"^(eval_.+?)_(\d{8}T\d{2})$")
+
+
+def output_slug_for_display(display_name: str) -> str:
+    """展示名 → 输出子目录名（通常与展示名相同；提供反向查找接口）。"""
+    return display_name
+
+
+def output_slug_for_registry_slug(slug: str) -> str:
+    """模型 registry slug → 输出子目录展示名（SLUG_TO_DISPLAY 映射）。"""
+    return SLUG_TO_DISPLAY.get(slug.lower(), slug)
+
+
+def plot_dir_for_registry_slug(
+    output_root: Path, init_tag: str, reg_slug: str
+) -> Path:
+    """用 registry slug 获取对比图输出目录（转换为展示名后调用 plot_dir）。"""
+    disp = output_slug_for_registry_slug(reg_slug)
+    return plot_dir(output_root, init_tag, disp)
+
+
+def parse_init_tag_from_npy_name(name: str) -> Optional[Tuple[str, str]]:
+    """
+    从 NPY 文件名中解析 (var_stem, init_tag)。
+
+    支持：
+      ``{var}_{init_tag}.npy``               → ("u10", "20260308T12")
+      ``{var}_surface_{init_tag}.npy``       → ("u10_surface", "20260308T12")
+    """
+    stem = name
+    if stem.endswith(".npy"):
+        stem = stem[:-4]
+    m = _INIT_TAG_RE.search(stem)
+    if not m:
+        return None
+    init_tag = m.group(1)
+    var_stem = stem[: m.start()].rstrip("_")
+    return (var_stem, init_tag)
+
+
+def parse_eval_dir_legacy_name(name: str) -> Optional[Tuple[str, str]]:
+    """
+    从旧式 eval 目录名解析 (new_base, init_tag)。
+
+    示例：
+      ``eval_240h_20260308T12``       → ("eval_240h", "20260308T12")
+      ``eval_W-MAE_240h_20260308T12`` → ("eval_W-MAE_240h", "20260308T12")
+    """
+    m = _LEGACY_EVAL_RE.match(name)
+    if not m:
+        return None
+    return (m.group(1), m.group(2))

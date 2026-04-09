@@ -154,11 +154,15 @@ def _npy_path(
     var: str,
     init_tag: str,
 ) -> Path:
+    """
+    init-first 布局：{output_root}/{init_tag}/{display_name}/{fname}
+    PanGu 使用 {var}_surface_{init_tag}.npy，其余使用 {var}_{init_tag}.npy。
+    """
     if slug == "pangu":
         fname = f"{var}_surface_{init_tag}.npy"
     else:
         fname = f"{var}_{init_tag}.npy"
-    return output_root / display_name / "ERA5_6H" / fname
+    return output_root / init_tag / display_name / fname
 
 
 from zk_io.npy_reader import load_pred_stack as _load_pred_stack
