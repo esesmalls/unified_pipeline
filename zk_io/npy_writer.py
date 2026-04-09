@@ -2,8 +2,8 @@
 NPY 输出工具。
 
 NpyStackWriter 使用 memmap 方式，边推理边写，避免全部积累在内存。
-输出格式与现有 GunDong_Infer_result_12h 兼容：
-  {output_root}/{ModelName}/ERA5_6H/{var}_{TAG}.npy
+输出布局（见 ``zk_io/rolling_paths``）：
+  {output_root}/{init_tag}/{output_slug}/{var}_{TAG}.npy
   shape: (n_steps, H, W), dtype=float32
 """
 from __future__ import annotations
@@ -14,6 +14,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from numpy.lib.format import open_memmap
 
+from zk_io.rolling_paths import npy_dir, npy_filename
+
 
 class NpyStackWriter:
     """
@@ -21,7 +23,7 @@ class NpyStackWriter:
 
     Args:
         output_root:  结果根目录
-        model_name:   模型目录名（如 "FengWu"）
+        model_name:   展示名（如 "FengWu"、"GC_Official_Oper"），与 rolling 中 display_name 一致
         init_tag:     时间标签（如 "20260308T12"）
         variables:    地表变量名列表（如 ["u10","v10","t2m","msl"]）
         n_steps:      预报总步数
@@ -38,6 +40,7 @@ class NpyStackWriter:
         n_steps: int,
         shape_hw: Tuple[int, int] = (721, 1440),
         pangu_suffix: bool = False,
+        on_missing_var=None,
     ):
         self.output_root = Path(output_root)
         self.model_name = model_name
@@ -47,16 +50,14 @@ class NpyStackWriter:
         self.shape_hw = shape_hw
         self._pangu_suffix = pangu_suffix
         self._step_idx = 0
+        self._on_missing_var = on_missing_var
+        self._missing_events: List[Dict[str, object]] = []
 
-        base = self.output_root / model_name / "ERA5_6H"
+        base = npy_dir(self.output_root, init_tag, model_name)
         base.mkdir(parents=True, exist_ok=True)
         self._memmaps: Dict[str, np.memmap] = {}
         for var in variables:
-            fname = (
-                f"{var}_surface_{init_tag}.npy"
-                if pangu_suffix
-                else f"{var}_{init_tag}.npy"
-            )
+            fname = npy_filename(var, init_tag, pangu_suffix=pangu_suffix)
             path = base / fname
             # Use NumPy's .npy-aware memmap writer so outputs are standards-compliant
             # and can be loaded by np.load(..., mmap_mode="r") in evaluation scripts.
@@ -76,6 +77,11 @@ class NpyStackWriter:
                 if arr.shape != self.shape_hw:
                     arr = arr[:self.shape_hw[0], :self.shape_hw[1]]
                 mm[step_idx] = arr
+            else:
+                evt = {"step_idx": int(step_idx), "var": str(var), "strategy": "skip_write"}
+                self._missing_events.append(evt)
+                if self._on_missing_var is not None:
+                    self._on_missing_var(step_idx, var)
 
     def flush(self) -> None:
         """强制刷写所有 memmap。"""
@@ -95,13 +101,12 @@ class NpyStackWriter:
         self.close()
 
     def get_paths(self) -> Dict[str, Path]:
-        base = self.output_root / self.model_name / "ERA5_6H"
+        base = npy_dir(self.output_root, self.init_tag, self.model_name)
         result = {}
         for var in self.variables:
-            fname = (
-                f"{var}_surface_{self.init_tag}.npy"
-                if self._pangu_suffix
-                else f"{var}_{self.init_tag}.npy"
-            )
+            fname = npy_filename(var, self.init_tag, pangu_suffix=self._pangu_suffix)
             result[var] = base / fname
         return result
+
+    def get_missing_events(self) -> List[Dict[str, object]]:
+        return list(self._missing_events)
