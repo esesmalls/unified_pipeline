@@ -544,13 +544,8 @@ def run_rolling(
                         progress_fn=_progress,
                     )
 
-                step_profile_enabled = _env_true("ROLLING_STEP_PROFILE", "0")
-                try:
-                    step_profile_every = int(os.environ.get("ROLLING_STEP_PROFILE_EVERY", "8"))
-                except ValueError:
-                    step_profile_every = 8
-                step_profile_every = max(1, step_profile_every)
-                step_totals: Dict[str, float] = {
+                # 逐段累计耗时（始终开启）：推理/真值加载/NPY写/画图/评估
+                _stage_cum: Dict[str, float] = {
                     "model_step_s": 0.0,
                     "truth_load_s": 0.0,
                     "npy_write_s": 0.0,
@@ -558,6 +553,14 @@ def run_rolling(
                     "plot_s": 0.0,
                     "eval_s": 0.0,
                 }
+                # 可选：中间过程窗口输出（ROLLING_STEP_PROFILE=1 时每 N 帧打印一次窗口均值）
+                step_profile_enabled = _env_true("ROLLING_STEP_PROFILE", "0")
+                try:
+                    step_profile_every = int(os.environ.get("ROLLING_STEP_PROFILE_EVERY", "8"))
+                except ValueError:
+                    step_profile_every = 8
+                step_profile_every = max(1, step_profile_every)
+                step_totals: Dict[str, float] = dict(_stage_cum)  # 窗口副本
                 step_count_window = 0
 
                 pressure_var_names = model.get_pressure_var_names()
@@ -594,17 +597,19 @@ def run_rolling(
 
                     for si, lead in enumerate(leads):
                         steps_needed = lead_step // step_h
-                        t_start = time.perf_counter() if step_profile_enabled else 0.0
+                        t_start = time.perf_counter()
                         for _ in range(steps_needed):
                             state = model.step(state)
+                        _dt = time.perf_counter() - t_start
+                        _stage_cum["model_step_s"] += _dt
                         if step_profile_enabled:
-                            step_totals["model_step_s"] += (time.perf_counter() - t_start)
+                            step_totals["model_step_s"] += _dt
 
                         current_lead = state.lead
                         valid_dt = init_dt + timedelta(hours=current_lead)
                         truth_blob = None
                         if need_truth:
-                            t_start = time.perf_counter() if step_profile_enabled else 0.0
+                            t_start = time.perf_counter()
                             if truth_cache is not None:
                                 # 从缓存读取（O(1)内存查找或磁盘单文件读取，无重复 I/O）
                                 truth_blob = truth_cache.get(valid_dt)
@@ -620,8 +625,10 @@ def run_rolling(
                                     truth_blob = truth_adapter.load_blob_for_valid_time(valid_dt)
                                 except Exception:
                                     pass
+                            _dt = time.perf_counter() - t_start
+                            _stage_cum["truth_load_s"] += _dt
                             if step_profile_enabled:
-                                step_totals["truth_load_s"] += (time.perf_counter() - t_start)
+                                step_totals["truth_load_s"] += _dt
 
                         pred_sfc = extract_surface_vars(
                             state.blob,
@@ -634,15 +641,17 @@ def run_rolling(
                                 lead_hours=current_lead,
                             ),
                         )
-                        t_start = time.perf_counter() if step_profile_enabled else 0.0
+                        t_start = time.perf_counter()
                         npy_writer.write_step(si, pred_sfc)
+                        _dt = time.perf_counter() - t_start
+                        _stage_cum["npy_write_s"] += _dt
                         if step_profile_enabled:
-                            step_totals["npy_write_s"] += (time.perf_counter() - t_start)
+                            step_totals["npy_write_s"] += _dt
                         timing.add_frames(1)
 
                         # NC 写出
                         if save_nc:
-                            t_start = time.perf_counter() if step_profile_enabled else 0.0
+                            t_start = time.perf_counter()
                             vars_2d = {f"sfc_{k}": v for k, v in pred_sfc.items()}
                             vars_3d = None
                             if pressure_var_names:
@@ -663,12 +672,14 @@ def run_rolling(
                                 lat=lat,
                                 lon=lon,
                             )
+                            _dt = time.perf_counter() - t_start
+                            _stage_cum["nc_write_s"] += _dt
                             if step_profile_enabled:
-                                step_totals["nc_write_s"] += (time.perf_counter() - t_start)
+                                step_totals["nc_write_s"] += _dt
 
                         # 对比图
                         if not skip_plots:
-                            t_start = time.perf_counter() if step_profile_enabled else 0.0
+                            t_start = time.perf_counter()
                             if cpu_timing_exclude_plots:
                                 timing.pause_cpu()
                             try:
@@ -704,12 +715,14 @@ def run_rolling(
                             finally:
                                 if cpu_timing_exclude_plots:
                                     timing.resume_cpu()
+                            _dt = time.perf_counter() - t_start
+                            _stage_cum["plot_s"] += _dt
                             if step_profile_enabled:
-                                step_totals["plot_s"] += (time.perf_counter() - t_start)
+                                step_totals["plot_s"] += _dt
 
                         # 内嵌评估
                         if acc is not None and truth_blob is not None:
-                            t_start = time.perf_counter() if step_profile_enabled else 0.0
+                            t_start = time.perf_counter()
                             truth_sfc_eval = extract_surface_vars(
                                 truth_blob,
                                 sfc_vars,
@@ -733,8 +746,10 @@ def run_rolling(
                                         valid_times_by_tag[init_tag].setdefault(
                                             (display_name, var_name), []
                                         ).append(valid_dt)
+                            _dt = time.perf_counter() - t_start
+                            _stage_cum["eval_s"] += _dt
                             if step_profile_enabled:
-                                step_totals["eval_s"] += (time.perf_counter() - t_start)
+                                step_totals["eval_s"] += _dt
 
                         if step_profile_enabled:
                             step_count_window += 1
@@ -758,6 +773,23 @@ def run_rolling(
                             _progress(f"[{display_name}] {init_tag} lead={current_lead}h done")
 
                 _progress(f"[{display_name}] {init_tag} NPY 已保存: {npy_writer.get_paths()}")
+
+                # ── 各阶段累计耗时汇总（始终输出）──
+                _n_f = max(1, len(leads))
+                _stage_parts = [
+                    f"model_step={_stage_cum['model_step_s']:.1f}s"
+                    f"({_stage_cum['model_step_s']/_n_f:.2f}s/f)",
+                    f"truth={_stage_cum['truth_load_s']:.1f}s",
+                    f"npy={_stage_cum['npy_write_s']:.1f}s",
+                    f"plot={_stage_cum['plot_s']:.1f}s",
+                    f"eval={_stage_cum['eval_s']:.1f}s",
+                ]
+                if _stage_cum["nc_write_s"] > 0:
+                    _stage_parts.append(f"nc={_stage_cum['nc_write_s']:.1f}s")
+                _progress(
+                    f"[{display_name}] [stage_totals] {init_tag}  " + "  ".join(_stage_parts)
+                )
+
                 model_fallback_used.extend(npy_writer.get_missing_events())
                 _write_fallback_meta(
                     output_root=Path(output_root),

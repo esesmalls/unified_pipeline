@@ -58,7 +58,7 @@ def _torch_cuda_available() -> bool:
 # ---------------------------------------------------------------------------
 
 class ProcessCpuStopwatch:
-    """轻量进程 CPU 计时器。
+    """轻量进程 CPU 计时器，支持 pause/resume（用于排除画图等非推理阶段）。
 
     使用 time.process_time() 差分，返回用户态 + 内核态 CPU 秒数。
     不计 sleep 或 GPU 内核独立执行的时间。
@@ -66,12 +66,30 @@ class ProcessCpuStopwatch:
 
     def __init__(self) -> None:
         self._start: float = time.process_time()
+        self._accumulated: float = 0.0
+        self._paused: bool = False
 
     def reset(self) -> None:
         self._start = time.process_time()
+        self._accumulated = 0.0
+        self._paused = False
+
+    def pause(self) -> None:
+        """暂停计时：将当前已经历的时间存入 _accumulated，停止累积。"""
+        if not self._paused:
+            self._accumulated += time.process_time() - self._start
+            self._paused = True
+
+    def resume(self) -> None:
+        """恢复计时：重新设定起始点。"""
+        if self._paused:
+            self._start = time.process_time()
+            self._paused = False
 
     def elapsed_s(self) -> float:
-        return time.process_time() - self._start
+        if self._paused:
+            return self._accumulated
+        return self._accumulated + (time.process_time() - self._start)
 
 
 # ---------------------------------------------------------------------------
@@ -199,17 +217,66 @@ class RollingInferenceTiming:
 
         return rec.cpu_s, rec.gpu_s, rec.frames, rec.avg_cpu_s, rec.avg_gpu_s
 
-    def summary_rows(self) -> List[str]:
-        """返回各模型汇总行字符串列表，便于直接传给日志函数。"""
-        if not self._records:
+    def pause_cpu(self) -> None:
+        """暂停 CPU 计时（用于排除画图等非推理段）。"""
+        if self._enable_cpu and self._cpu_sw is not None:
+            self._cpu_sw.pause()
+
+    def resume_cpu(self) -> None:
+        """恢复 CPU 计时。"""
+        if self._enable_cpu and self._cpu_sw is not None:
+            self._cpu_sw.resume()
+
+    def to_dict_list(self) -> List[Dict]:
+        """将所有模型记录导出为 dict 列表（用于多 rank 间传递汇总数据）。"""
+        result = []
+        for r in self._records:
+            d: Dict = {
+                "model": r.model_key,
+                "cpu_s": r.cpu_s,
+                "gpu_s": r.gpu_s,
+                "frames": r.frames,
+            }
+            result.append(d)
+        return result
+
+    @classmethod
+    def summary_rows_from_dicts(
+        cls,
+        records: List[Dict],
+        model_order: Optional[List[str]] = None,
+        label: str = "",
+    ) -> List[str]:
+        """从 to_dict_list() 产出的 dict 列表生成汇总行（多 rank 合并场景）。
+
+        Args:
+            records:     每个 dict 包含 model/cpu_s/gpu_s/frames 字段。
+            model_order: 指定模型排列顺序（按列表顺序排序输出）。
+            label:       汇总标题附加说明（如 "合并 rank"）。
+        """
+        if not records:
             return []
-        lines = ["[timing] ===== 推理时间汇总（本 rank）====="]
-        has_gpu = any(r.gpu_s is not None for r in self._records)
+        recs = [
+            _ModelRecord(
+                model_key=d["model"],
+                cpu_s=d.get("cpu_s", 0.0),
+                gpu_s=d.get("gpu_s"),
+                frames=d.get("frames", 0),
+            )
+            for d in records
+        ]
+        if model_order:
+            order_map = {m: i for i, m in enumerate(model_order)}
+            recs.sort(key=lambda r: order_map.get(r.model_key, len(model_order)))
+
+        title = f"推理时间汇总（{label}）" if label else "推理时间汇总"
+        lines = [f"[timing] ===== {title} ====="]
+        has_gpu = any(r.gpu_s is not None for r in recs)
         header = f"{'模型':<28} {'帧数':>6}  {'CPU总(s)':>10}  {'CPU均/帧(s)':>12}"
         if has_gpu:
             header += f"  {'GPU总(s)':>10}  {'GPU均/帧(s)':>12}"
         lines.append(f"[timing] {header}")
-        for r in self._records:
+        for r in recs:
             avg_cpu = f"{r.avg_cpu_s:.3f}" if r.avg_cpu_s is not None else "  N/A"
             row = (
                 f"[timing] {r.model_key:<28} {r.frames:>6}  "
@@ -224,6 +291,13 @@ class RollingInferenceTiming:
             lines.append(row)
         lines.append("[timing] ==========================================")
         return lines
+
+    def summary_rows(self) -> List[str]:
+        """返回各模型汇总行字符串列表，便于直接传给日志函数。"""
+        return self.summary_rows_from_dicts(
+            records=self.to_dict_list(),
+            label="本 rank",
+        )
 
 
 # ---------------------------------------------------------------------------
