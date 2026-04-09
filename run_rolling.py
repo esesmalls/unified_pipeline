@@ -35,7 +35,7 @@
       --data-source gundong_20260324 --date-range 20260310 \\
       --init-hour 12 --max-lead 240 --lead-step 6 \\
       --models pangu fengwu fuxi graphcast \\
-      --output-root /public/share/aciwgvx1jd/GunDong_Infer_result_12h
+      --output-root /public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h
 """
 from __future__ import annotations
 
@@ -45,10 +45,24 @@ import sys
 # ---------------------------------------------------------------
 # 必须在任何 ROCm/CUDA 相关 import 之前设置每进程可见设备。
 # torchrun / srun 会注入 LOCAL_RANK；单进程时不做修改。
-# 参考主分支 GunDong_Infer/run_gundong_infer.py 的相同处理。
+#
+# 若已显式给出逗号分隔列表（如 HIP_VISIBLE_DEVICES=0,1），则**不再**把各环境变量
+# 压成单个索引：在部分 ROCm/Slurm 组合下，仅暴露「设备 1」会导致 rank1 上
+# torch.cuda.is_available() 为 False 与 ORT SIGABRT。此时保留列表并在 chdir 后
+# torch.cuda.set_device(LOCAL_RANK)。
 # ---------------------------------------------------------------
 _local_rank = os.environ.get("LOCAL_RANK")
+_multi_gpu_visible = False
 if _local_rank is not None:
+    _vis = (
+        os.environ.get("HIP_VISIBLE_DEVICES")
+        or os.environ.get("CUDA_VISIBLE_DEVICES")
+        or ""
+    )
+    if "," in str(_vis).strip():
+        _multi_gpu_visible = True
+
+if _local_rank is not None and not _multi_gpu_visible:
     for _k in ("ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES",
                "HIP_VISIBLE_DEVICES", "HSA_VISIBLE_DEVICES"):
         os.environ[_k] = str(_local_rank)
@@ -57,33 +71,26 @@ import argparse
 from pathlib import Path
 from typing import List, Optional
 
-from runtime_paths import UNIFIED_PIPELINE_ROOT, GRAPH_CAST_ROOT
+from runtime_paths import UNIFIED_PIPELINE_ROOT, GRAPH_CAST_ROOT, bootstrap
+bootstrap()
 
 _ZK_ROOT = UNIFIED_PIPELINE_ROOT
 _GRAPH_ROOT = GRAPH_CAST_ROOT
-sys.path.insert(0, str(_ZK_ROOT))
-os.chdir(_GRAPH_ROOT)
+
+if _local_rank is not None and _multi_gpu_visible:
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(int(_local_rank))
 
 import yaml
 from pipelines.rolling_pipeline import run_rolling
+
+
+def _env_true_str(val: str) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+from core.config_loader import load_defaults as _load_defaults, get_all_enabled_models, resolve_output_root
 from core.monitoring import start_hardware_logger
-
-
-def _load_defaults() -> dict:
-    cfg_path = _ZK_ROOT / "config" / "defaults.yaml"
-    if cfg_path.is_file():
-        with open(cfg_path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
-
-
-def _get_all_enabled_models(models_cfg: Path) -> List[str]:
-    with open(models_cfg, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-    return [
-        name for name, cfg in raw.get("models", {}).items()
-        if cfg.get("enabled", True)
-    ]
 
 
 def main():
@@ -134,8 +141,8 @@ def main():
     # ---- 输出 ----
     ap.add_argument(
         "--output-root", type=Path,
-        default=Path(r_defaults.get("output_root", "/public/share/aciwgvx1jd/GunDong_Infer_result_12h")),
-        help="结果根目录",
+        default=None,
+        help="结果根目录（默认根据 --data-source 自动选择 LYQ/ecmwf_init 或 LYQ/gundong）",
     )
     ap.add_argument(
         "--skip-plots", action="store_true",
@@ -168,6 +175,31 @@ def main():
         default=e_defaults.get("metrics", ["W-MAE", "W-RMSE"]),
         help="评估指标（默认 W-MAE W-RMSE）",
     )
+    ap.add_argument(
+        "--eval-modes",
+        nargs="*",
+        default=None,
+        metavar="MODE",
+        help=(
+            "enable-eval 时的评估模式。可含 downscale（对齐降尺度，默认）、"
+            "fidelity_nn、fidelity_exact、upscale。多选；省略时等同 downscale。"
+        ),
+    )
+    ap.add_argument(
+        "--fidelity-max-deg",
+        type=float,
+        default=float(e_defaults.get("fidelity_max_deg", 0.125)),
+        help="fidelity_nn：模型格点与真值格点最大允许距离（度）",
+    )
+    ap.add_argument(
+        "--auto-multigrid",
+        action="store_true",
+        default=bool(e_defaults.get("auto_multigrid", False)),
+        help=(
+            "未指定 --eval-modes 时自动附加 fidelity_nn 与 upscale（仅细于 721×1440 的 "
+            "ecmwf_init GRIB 真值生效）"
+        ),
+    )
 
     # ---- 真值数据源 ----
     ap.add_argument(
@@ -177,6 +209,40 @@ def main():
             "默认与 --data-source 一致。"
             "示例：--data-source ecmwf_init --truth-source gundong_20260324"
         ),
+    )
+
+    # ---- 真值缓存 ----
+    ap.add_argument(
+        "--truth-cache-mode",
+        default=os.environ.get("TRUTH_CACHE_MODE", "auto"),
+        choices=["auto", "memory", "disk"],
+        help=(
+            "真值缓存模式（默认 auto）:\n"
+            "  auto   — 运行时估算内存，自动选择 memory 或 disk\n"
+            "  memory — 进程级 dict，模型切换不清理，作业结束随进程释放\n"
+            "  disk   — {output_root}/_truth_cache/{job_id}/rank{R}/…，作业结束默认清理\n"
+            "当 --skip-plots 且不 --enable-eval 时，完全跳过真值路径，此参数无效。"
+        ),
+    )
+    ap.add_argument(
+        "--truth-cache-budget-ratio",
+        type=float,
+        default=float(os.environ.get("TRUTH_CACHE_BUDGET_RATIO", "0.4")),
+        metavar="RATIO",
+        help="auto 模式：可用内存预留给缓存的比例（默认 0.4 即 40%%）",
+    )
+    ap.add_argument(
+        "--truth-cache-safety-factor",
+        type=float,
+        default=float(os.environ.get("TRUTH_CACHE_SAFETY_FACTOR", "1.3")),
+        metavar="FACTOR",
+        help="auto 模式：估算总需求时的安全系数（默认 1.3）",
+    )
+    ap.add_argument(
+        "--keep-truth-cache",
+        action="store_true",
+        default=_env_true_str(os.environ.get("KEEP_TRUTH_CACHE", "0")),
+        help="保留磁盘缓存目录（调试用；默认作业结束后删除）",
     )
 
     # ---- 硬件/配置 ----
@@ -223,11 +289,35 @@ def main():
         "--no-gpu-timing", action="store_true",
         help="禁用 GPU/DCU 设备区间时间统计（默认开启；GPU 不可用时自动无操作）",
     )
+    ap.add_argument(
+        "--cpu-timing-exclude-plots",
+        action="store_true",
+        default=bool(r_defaults.get("cpu_timing_exclude_plots", False)),
+        help=(
+            "CPU 计时时排除逐步对比图（matplotlib）；GPU 区间计时仍含整段。"
+            "与 --no-cpu-timing 互斥生效（关闭 CPU 统计时无作用）。"
+        ),
+    )
 
     args = ap.parse_args()
 
+    _em = args.eval_modes
+    if _em is None:
+        eval_mode_list = ["downscale"]
+        _auto_mg = args.auto_multigrid or bool(
+            e_defaults.get("auto_multigrid", False),
+        )
+    elif len(_em) == 0:
+        eval_mode_list = ["downscale"]
+        _auto_mg = args.auto_multigrid or bool(
+            e_defaults.get("auto_multigrid", False),
+        )
+    else:
+        eval_mode_list = list(_em)
+        _auto_mg = bool(args.auto_multigrid)
+
     if args.models == ["all"]:
-        model_names = _get_all_enabled_models(args.models_config)
+        model_names = get_all_enabled_models(args.models_config)
     else:
         model_names = args.models
 
@@ -242,6 +332,12 @@ def main():
         poll_interval=args.monitor_interval,
         enabled=_monitor_ok,
     ):
+        output_root = args.output_root
+        if output_root is None:
+            output_root = resolve_output_root(args.data_source, defaults)
+
+        _mg = [m for m in eval_mode_list if m.lower() != "downscale"]
+        _run_ds = "downscale" in {m.lower() for m in eval_mode_list}
         run_rolling(
             model_names=model_names,
             data_source=args.data_source,
@@ -250,7 +346,7 @@ def main():
             lead_step=args.lead_step,
             max_lead=args.max_lead,
             variables=variables,
-            output_root=args.output_root,
+            output_root=output_root,
             device=args.device,
             skip_plots=args.skip_plots,
             save_nc=args.save_nc,
@@ -264,6 +360,15 @@ def main():
             truth_source=args.truth_source,
             enable_cpu_timing=not args.no_cpu_timing,
             enable_gpu_timing=not args.no_gpu_timing,
+            cpu_timing_exclude_plots=bool(args.cpu_timing_exclude_plots),
+            eval_multigrid_modes=_mg if args.enable_eval else None,
+            fidelity_max_deg=args.fidelity_max_deg,
+            auto_multigrid=_auto_mg and args.enable_eval,
+            eval_run_downscale=_run_ds if args.enable_eval else True,
+            truth_cache_mode=args.truth_cache_mode,
+            truth_cache_budget_ratio=args.truth_cache_budget_ratio,
+            truth_cache_safety_factor=args.truth_cache_safety_factor,
+            keep_truth_cache=args.keep_truth_cache,
         )
 
 

@@ -102,6 +102,8 @@ unified_pipeline/
 │   ├── data.yaml
 │   └── defaults.yaml
 ├── core/
+│   ├── config_loader.py              # 共享配置加载（load_defaults / resolve_output_root / get_all_enabled_models）
+│   ├── capability/                    # 能力存储（CapabilityMemoryStore）
 │   ├── data/
 │   │   ├── base_adapter.py
 │   │   ├── detector.py
@@ -120,31 +122,40 @@ unified_pipeline/
 │   │   ├── graphcast_official_operational_model.py
 │   │   └── graphcast_official_operational_stepwise_model.py
 │   ├── evaluation/
-│   │   └── metrics.py
+│   │   ├── metrics.py
+│   │   └── multigrid_eval.py          # 多分辨率评估（fidelity / upscale）
 │   └── monitoring/
-│       └── hardware_logger.py
+│       ├── __init__.py                # progress() 共享日志函数
+│       ├── hardware_logger.py
+│       └── inference_timing.py        # 推理计时（RollingInferenceTiming）
 ├── pipelines/
 │   ├── verify_pipeline.py
-│   └── rolling_pipeline.py
+│   ├── rolling_pipeline.py
+│   └── truth_cache.py             # 作业内全局真值缓存（memory/disk/auto）
 ├── zk_io/
 │   ├── npy_writer.py
+│   ├── npy_reader.py                  # 共享 NPY 预报栈加载
 │   ├── nc_writer.py
-│   └── plot_utils.py
+│   ├── plot_utils.py
+│   └── rolling_paths.py               # 输出路径布局 + 模型名映射（单一来源）
 ├── scripts/
+│   ├── _common.sh                     # 共享 conda/DTK/路径设置
 │   ├── submit_verify.sh
 │   ├── submit_rolling.sh
 │   ├── submit_evaluate.sh
-│   ├── submit_gundong_20260303_5models.sh
+│   ├── submit_gundong_20260303_5models.sh  # (deprecated)
+│   ├── examples/                      # 一次性 campaign 示例
 │   └── compare_stepwise_vs_cache.py
+├── tests/
+│   └── test_smoke.py                  # pytest 冒烟测试
 ├── run_verify.py
 ├── run_rolling.py
 ├── run_eval_npy.py
-├── run_evaluate.py
+├── run_evaluate.py                    # (deprecated, 推荐 run_eval_npy.py)
+├── evaluate_models.py                 # (deprecated, 推荐 run_eval_npy.py)
 ├── infer_cepri_onnx.py
 ├── cepri_loader.py
-├── evaluate_models.py
-├── test_core.py
-├── runtime_paths.py
+├── runtime_paths.py                   # 路径锚点 + bootstrap()
 ├── requirements-ci.txt
 ├── AGENTS.md
 ├── CHANGELOG.md
@@ -204,14 +215,16 @@ unified_pipeline/
   - `graphcast`
   - `graphcast_cs`
   - `graphcast_official_operational`（官方 JAX GraphCast operational 参数，0.25°/13层/mesh2to6）
-  - `graphcast_official_operational_stepwise`（实验：进程内逐步 JAX，与 cache-based 版双轨并存）
+  - `graphcast_official_operational_stepwise`（实验：进程内逐步 JAX，与 cache-based 版双轨并存；**默认 `enabled: false`，不纳入 `MODELS=all`**，需单独指定模型名或改配置后启用）
 - `graphcast_official_operational` 特有配置：
   - `type: jax_official`
   - `rollout_script`：指向 `ZK_Models/run_graphcast_official_rollout_gundong.py`
   - `assets_root`：官方参数/统计量/数据集目录
   - `param_file`：operational `.npz` 参数文件名
   - `embed_python`：e2s JAX embed 虚拟环境的 Python 路径
-  - `rollout_cache_dir`：预计算 NPY 缓存目录
+  - `rollout_cache_dir`：预计算 NPY 缓存目录（默认由 rolling 运行时注入为 `${output_root}/_gc_oper_cache`）
+  - `lock_rollout_cache_dir`：设为 `true` 时固定使用 `rollout_cache_dir`（禁用运行时注入）
+  - `rollout_blob_input_mode`：`init_only`（默认）或 `full_window`。`init_only` 仅使用 `t-6h/t0` 初始化输入，不再尝试未来时次 blob
   - 该模型采用"预计算全量 rollout → 逐步读取缓存"策略，无需 JAX 在主进程内运行
 - `graphcast_official_operational_stepwise` 特有配置（**实验**）：
   - `type: jax_official_stepwise`
@@ -241,14 +254,21 @@ unified_pipeline/
   - `ecmwf_init`（`ecmwf_init_grib`）
     - ECMWF/GFS 初始场 GRIB1 文件，命名 `G_YYYYMMDDHH_fh_{0,1}.grib1`
     - 需要 `pygrib` 依赖（当前默认 conda 环境已包含）
-    - 高空变量：`z`(geopotential, m²/s²) 或 `gh`(→z ×9.80665) / `t` / `u` / `v` / `q`(specific humidity) 或 `r`(→q)；面场：`2t` / `10u` / `10v` / `msl`
-    - TP（总降水）优先从 `fh_1` 读取，缺失则填零
+    - 高空变量：`z`(geopotential, m²/s²) 或 `gh`(→z ×9.80665) / `t` / `u` / `v` / `q`(specific humidity) 或 `r`(→q)；可选读取 `w`（写入 blob 的 `pangu_w`）；面场：`2t` / `10u` / `10v` / `msl`
+    - TP（总降水）优先从 `fh_0` 读取，缺失试 `fh_1`，仍缺则填零
     - 自动探测：目录下含 `G_*_fh_*.grib1` 即被识别为此格式
 
 ### `config/defaults.yaml`
 
 - verify/rolling/eval 默认参数
 - CLI 参数优先级高于该文件
+
+### 缺失通道处理与记忆（rolling）
+
+- rolling 会在 `${output_root}/_capability_memory/source_model_capabilities.json` 持久化“数据源-模型”能力记忆。
+- 每次加载 blob 都会记录可用键（例如 `surface_tp_6h`、`pangu_w`、`surface_z_at_surface`、`land_sea_mask`）。
+- 模型侧统一策略：优先使用真实通道；缺失时按模型策略回退，并写入 `meta_{init_tag}.json` 的 `fallback_used`。
+- `graphcast_official`* 路径支持优先使用真实 `w` / `tp6`（若数据源提供），仅在缺失时零填充并审计。
 
 ## 6. 环境与依赖
 
@@ -322,19 +342,43 @@ python ZK_Models/unified_pipeline/run_rolling.py \
 常用开关：
 
 - `--enable-eval`：推理过程中内嵌评估
+- `--eval-modes`：评估子模式（可组合）。`downscale`（默认）= 真值双线性到模型网格后算 W-MAE/W-RMSE，输出 `{output_root}/{init_tag}/eval_{max_lead}h/`；`fidelity_nn` = 在模型格点上用「细于模型网格的」真值经最近邻（距离 ≤ `--fidelity-max-deg`）做掩膜加权指标，输出 `{output_root}/{init_tag}/eval_fidelity_nn_{max_lead}h/`；`fidelity_exact` = 仅经纬度在容差内重合的格点；`upscale` = 将预报双线性插到真值网格上再评估，输出 `{output_root}/{init_tag}/eval_upscale_{max_lead}h/`。**保真/升尺度是否执行**由「真值 `lat/lon` 是否与模型预报网格一致」决定：一致则与对齐降尺度等价并自动跳过；不一致才计算（与文件格式无关）。细网格真值优先来自适配器的 `load_surface_native_for_valid_time`（如细分辨率 GRIB），否则与降尺度相同使用 `load_blob_for_valid_time`。仅跑保真/升尺度时可传 `--eval-modes fidelity_nn upscale`（不包含 `downscale` 则不再写对齐降尺度 CSV）。
+- `--fidelity-max-deg`：`fidelity_nn` 阈值（度，默认 `0.125`）。
+- `--auto-multigrid`：未在命令行指定 `--eval-modes` 时，除默认 `downscale` 外自动附加 `fidelity_nn` 与 `upscale`（仅在真值网格与模型网格不一致时才会实际产出多分辨率结果）。也可在 `config/defaults.yaml` 的 `evaluation.auto_multigrid` 中默认开启。
 - `--save-diff` / `--save-diff-nc`：保存差值场
-- `--skip-plots`：跳过对比图
-- `--save-nc`：保存逐步 NC
+- `--skip-plots`：跳过逐步对比图（不出任何 per-lead 图；与真值有无无关）
+- 无单独「只关三联图」开关：单图与三联由 `plot_compare` 在 `truth is None` 时自动选单面板
+- `--save-nc`：保存逐步 NC（地表 `sfc_*`；若当前步 `state.blob` 含 `pangu_*` 则同时写 `pres_*`，`level` 维为 13，对应 PanGu/Cepri 等压面顺序）。FengWu 在能解出 69 通道预报时会有气压层；GraphCast Official Operational 由 JAX rollout 额外缓存 `pangu_*` NPY 后再写入每步 NC。
 - `--parallel-mode auto|date|model`：多卡分片策略
 - `--truth-source`：评估/对比图使用的真值数据源（默认同 `--data-source`）
 - `--lead-step` 必须能被模型步长整除，否则会直接报错退出（避免错配推理）
+- `--enable-eval` 默认关闭：未开启时不会写出 RMSE/MAE CSV、评估图或 `eval_`* 目录
+
+**真值缓存参数**（消除多模型/多步推理的逐帧 truth I/O 热点）：
+
+| 参数 | 环境变量 | 默认 | 说明 |
+|---|---|---|---|
+| `--truth-cache-mode` | `TRUTH_CACHE_MODE` | `auto` | `auto`=运行时自动选择，`memory`=进程级 dict，`disk`=磁盘文件 |
+| `--truth-cache-budget-ratio` | `TRUTH_CACHE_BUDGET_RATIO` | `0.4` | auto 模式：可用内存预留给缓存的比例 |
+| `--truth-cache-safety-factor` | `TRUTH_CACHE_SAFETY_FACTOR` | `1.3` | auto 模式：估算总需求的安全系数 |
+| `--keep-truth-cache` | `KEEP_TRUTH_CACHE` | `0` | 作业结束后保留磁盘缓存目录（调试用）|
+
+说明：
+- 当 `--skip-plots` 且不 `--enable-eval` 时，`need_truth=False`，真值路径**完全跳过**（不加载、不缓存），此时以上参数无效
+- 每个模型每个起报时刻开始前，一次性预加载整个预报区间的真值并存入缓存，帧循环中直接读取
+- `auto` 模式：采样第一帧估算单帧大小，乘以 `n_steps × safety_factor` 得到总需求；与 `available_mem × budget_ratio` 比较决定模式
+- 内存缓存 key 为 valid_dt，模型切换不清理（相同 valid_dt 在多模型间自动复用）
+- 磁盘缓存路径：`{output_root}/_truth_cache/{job_id}/rank{R}/`，原子写（`.tmp + os.replace`），作业结束默认清理
+- 多 rank 安全：memory 模式各进程私有；disk 模式按 `rank{R}` 子目录隔离，无跨 rank 写冲突
+- `ecmwf_init` 默认 **OUTPUT_ROOT** 为共享根目录 `.../LYQ/ecmwf_init`；各起报产物在根下以 **`{init_tag}`**（`yyyymmddTHH`）分子目录（如 `20260327T12/pangu/`）。侧向实验（原多套 `ECMWF_Init_Infer_result_*`）可迁出为 `20260327T12_12h_ab_full_window/` 等，见 `scripts/flatten_ecmwf_init_roots.py`。
 
 **时间统计开关**（默认两者均开启，日志中以 `[timing]` 为前缀）：
 
 - `--no-cpu-timing`：禁用进程 CPU 时间统计（基于 `time.process_time()`，统计用户态+内核态，不含设备侧内核执行时间）
 - `--no-gpu-timing`：禁用 GPU/DCU 设备区间时间统计（基于 `torch.cuda.Event`，在 ROCm/DCU 上通过 HIP 后端记录同一流上的设备时间轴跨度）
+- `--cpu-timing-exclude-plots`：在**仍出逐步对比图**的前提下，从 CPU 统计中扣除 matplotlib 出图段（更贴近「推理 + 写 NPY/NC + 真值加载 + 内嵌评估」等）；**GPU 区间仍为整段**（含出图期间设备空闲）。也可在 `config/defaults.yaml` 的 `pipeline.rolling.cpu_timing_exclude_plots` 默认开启；集群可设 `CPU_TIMING_EXCLUDE_PLOTS=1`（见 `scripts/submit_rolling.sh`）。
 
-两者相互独立。GPU 统计在 `torch.cuda.is_available()` 为 False（纯 CPU 环境）时自动跳过，不影响 CPU 统计。每模型完成滚动段后日志打印该模型帧数与总量，全部模型结束后打印汇总表（各模型平均 CPU/帧、平均 GPU/帧）。统计范围**不含**权重加载与 `unload()`，仅计「按日期/lead 推理+写帧」段。
+两者相互独立。GPU 统计在 `torch.cuda.is_available()` 为 False（纯 CPU 环境）时自动跳过，不影响 CPU 统计。每模型完成滚动段后日志打印该模型帧数与总量，全部模型结束后打印汇总表（各模型平均 CPU/帧、平均 GPU/帧）。统计范围**不含**权重加载与 `unload()`，默认计「按日期/lead 推理+写帧+真值加载+出图+（若开启）逐步评估」等整段内层循环；若开启 `--cpu-timing-exclude-plots` 则 CPU 侧再扣除逐步出图。
 
 使用 ECMWF 初始场 GRIB1 数据跑滚动推理（真值使用同源初始场参考）：
 
@@ -373,7 +417,19 @@ python ZK_Models/unified_pipeline/run_eval_npy.py \
   --max-lead 240 \
   --lead-step 6 \
   --models pangu fengwu fuxi graphcast graphcast_cs \
-  --output-root /public/share/aciwgvx1jd/GunDong_Infer_result_12h
+  --output-root /public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h
+```
+
+与 `run_rolling.py` 相同，支持 `--eval-modes`、`--fidelity-max-deg`、`--auto-multigrid`；例如仅重跑保真与升尺度：
+
+```bash
+python ZK_Models/unified_pipeline/run_eval_npy.py \
+  --data-source ecmwf_init \
+  --date-range 20260327 --init-hour 6 \
+  --max-lead 240 --lead-step 6 \
+  --models pangu fengwu \
+  --output-root /path/to/LYQ/ecmwf_init \
+  --eval-modes fidelity_nn upscale
 ```
 
 ### 7.5 旧入口评估（兼容）
@@ -387,7 +443,7 @@ python ZK_Models/unified_pipeline/run_evaluate.py \
 
 ## 8. Slurm 提交
 
-任务提交规范：**仅使用以下三个脚本**（通过环境变量覆盖参数）。
+任务提交规范：优先使用下列脚本（通过环境变量覆盖参数）。
 
 在 `unified_pipeline` 目录下：
 
@@ -395,17 +451,26 @@ python ZK_Models/unified_pipeline/run_evaluate.py \
 sbatch scripts/submit_verify.sh
 sbatch scripts/submit_rolling.sh
 TIME_TAG=20260308T12 sbatch scripts/submit_evaluate.sh
+# 仅基于已有 NPY 重跑评估（run_eval_npy：含 fidelity_nn / upscale 等，与滚动同源适配器）
+EVAL_ENGINE=npy EVAL_MODES=fidelity_nn \
+  DATA_SOURCE=ecmwf_init DATE_RANGE=20260327 INIT_HOUR=6 \
+  LEAD_STEP=6 MAX_LEAD=240 \
+  OUTPUT_ROOT=/public/share/aciwgvx1jd/LYQ/ecmwf_init \
+  MODELS_NPY="pangu fengwu fuxi graphcast graphcast_cs graphcast_official_operational" \
+  sbatch scripts/submit_evaluate.sh
 ```
+
+`submit_evaluate.sh` 支持两种引擎（默认不变）：`**EVAL_ENGINE=legacy**`（或未设置）调用 `run_evaluate.py`，依赖 `TIME_TAG`、`PRED_BASE_DIR`、`ERA5_DIR` 等；`**EVAL_ENGINE=npy**` 调用 `run_eval_npy.py`，与滚动推理共用 `config/data.yaml` 适配器，需设置 `DATE_RANGE`，可选 `EVAL_MODES`（如 `fidelity_nn`、`upscale`）、`MODELS_NPY`、`VARIABLES_NPY`；`**SPATIAL_PLOTS=1**` 时写出三联对比图（对齐降尺度图为 `{var}_leadXXX.png`；保真/升尺度为 `fidelity_nn_*`、`upscale_*` 等前缀，均在 `{output_root}/{init_tag}/plots/{output_slug}/`）。`INIT_HOUR`、`LEAD_STEP`、`MAX_LEAD`、`OUTPUT_ROOT` 可与 `submit_rolling.sh` 同名环境变量复用（脚本内映射为 `*_NP` 参数）。
 
 `scripts/submit_gundong_20260303_5models.sh` 已标记为兼容用途（deprecated），不建议新任务继续使用。
 
-**6 模型滚动推理（含官方 JAX GraphCast operational）**仍用 `submit_rolling.sh`：当流水线轮到 `graphcast_official_operational` 时，模型包装类会在 `init_state()` 内按需子进程调用官方 rollout（缓存写入 `rollout_cache_dir`），无需单独 Phase 1 脚本。示例：
+**6 模型滚动推理（含官方 JAX GraphCast operational）**仍用 `submit_rolling.sh`：当流水线轮到 `graphcast_official_operational` 时，模型包装类会在 `init_state()` 内按需子进程调用官方 rollout（默认缓存写入 `${output_root}/_gc_oper_cache`；可通过 `lock_rollout_cache_dir=true` 固定到配置路径），无需单独 Phase 1 脚本。示例：
 
 ```bash
 MODELS="pangu fengwu fuxi graphcast graphcast_cs graphcast_official_operational" \
   DATA_SOURCE=gundong_20260324 DATE_RANGE=20260303 INIT_HOUR=12 \
   LEAD_STEP=6 MAX_LEAD=240 ENABLE_EVAL=1 SKIP_PLOTS=1 \
-  OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_6models \
+  OUTPUT_ROOT=/public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h \
   sbatch -J zk_6models scripts/submit_rolling.sh
 ```
 
@@ -420,25 +485,27 @@ MODELS="fengwu fuxi" DATE_RANGE="20260301:20260318" ENABLE_EVAL=1 sbatch scripts
 ```bash
 MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=12 \
   LEAD_STEP=6 MAX_LEAD=240 ENABLE_EVAL=1 \
-  OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_rolling_A_serial \
+  OUTPUT_ROOT=/public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h \
   WORLD_SIZE=1 PARALLEL_MODE=auto \
   sbatch -J zk_roll_A_serial scripts/submit_rolling.sh
 ```
 
-- 需要 **`WORLD_SIZE=1`** 才能保证 `--enable-eval` 写入的 `eval_*/timeseries_metrics_*.csv` 完整；若设 `WORLD_SIZE=5` 并行跑各模型，多 rank 会争写同一 CSV。
-- **不推荐**在当前 DCU + 混合 ONNX（含 FuXi）栈上使用 **`WORLD_SIZE>1` 做按模型分卡并行**，见下方「8.0.1」试验记录；缩短墙钟请优先 **`WORLD_SIZE=1` 跑通后**再考虑离线评估或其它拆分方式。
+- 需要 `**WORLD_SIZE=1**` 才能保证 `--enable-eval` 写入的 `eval_*/timeseries_metrics_*.csv` 完整；若设 `WORLD_SIZE=5` 并行跑各模型，多 rank 会争写同一 CSV。
+- **不推荐**在当前 DCU + 混合 ONNX（含 FuXi）栈上使用 `**WORLD_SIZE>1` 做按模型分卡并行**，见下方「8.0.1」试验记录；缩短墙钟请优先 `**WORLD_SIZE=1` 跑通后**再考虑离线评估或其它拆分方式。
 
 #### 8.0.1 多进程 `torchrun` 并行推理试验记录（失败）
 
-在 **2026-03** 集群试验中：`parallel-mode auto` + 单日五模型 + `WORLD_SIZE=5`（每 rank 一局模型），作业如 `zk_roll_tpab_B`（例：Slurm `110494072`、`110494391`）均在 FuXi 对应进程 **反复**以 **`SIGABRT`（exit -6）** 退出：`torchrun` 报告 **首个失败子进程为 `local_rank: 2`（FuXi）**，其余 rank 被连带终止。
+在 **2026-03** 集群试验中：`parallel-mode auto` + 单日五模型 + `WORLD_SIZE=5`（每 rank 一局模型），作业如 `zk_roll_tpab_B`（例：Slurm `110494072`、`110494391`）均在 FuXi 对应进程 **反复**以 `**SIGABRT`（exit -6）** 退出：`torchrun` 报告 **首个失败子进程为 `local_rank: 2`（FuXi）**，其余 rank 被连带终止。
 
 已尝试缓解：**仅 rank0 启用** 硬件监控（避免多进程并发 `rocm-smi`）、按 `LOCAL_RANK` **错峰启动**加载 ONNX（默认约 `8s×LOCAL_RANK`，可调 `ROLLING_ORT_STAGGER_SEC`）、`MASTER_PORT` 隔离多作业。在相同节点类型上 **FuXi 仍不稳定**，根因推断为 **ROCm / ONNX Runtime 多进程并发建 Session** 与驱动栈交互，非业务 Python 逻辑错误。
 
-**当前结论**：滚动推理生产用法 **默认只启用作业 A 类配置**——`**WORLD_SIZE=1**` + 需评估时 **`ENABLE_EVAL=1`**。多卡按模型并行列为 **待验证/高风险**，需后续 ORT 或调度层面方案后再启用。
+**当前结论**：滚动推理生产用法 **默认只启用作业 A 类配置**——`**WORLD_SIZE=1`** + 需评估时 `**ENABLE_EVAL=1`**。多卡按模型并行列为 **待验证/高风险**，需后续 ORT 或调度层面方案后再启用。
 
 ### 8.1 日志首屏字段解读（排障建议）
 
-三个 `submit_*` 脚本都会在日志开头打印：
+从 `unified_pipeline/` 提交时，Slurm 标准输出/错误默认落在 **本仓库 `logs/`**（例如 `logs/rolling_<JOBID>.out`），该目录常被 `.gitignore` 忽略，排障时请在磁盘上直接打开或搜索这些路径。
+
+各 Slurm `submit_*` 脚本都会在日志开头打印：
 
 - `submit_script`：仓库内对应脚本的绝对路径（例如 `.../unified_pipeline/scripts/submit_rolling.sh`）。**请勿与 Slurm 在计算节点上的临时副本混淆**（见下）。
 - `slurm_batch_copy`（仅 Slurm 作业）：`sbatch` 在节点上实际执行的脚本副本路径，常见为 `.../spool_slurmd/job<ID>/slurm_script`，这是正常现象。
@@ -446,25 +513,32 @@ MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=
 - `python_entry`：本次执行的 Python 入口绝对路径
 - `ENV snapshot`：关键环境变量快照（模型、时间范围、步长、并行参数等）
 - `CMD`：最终展开后的命令行
+- `sbatch_repro_copy_paste`（`submit_rolling.sh` / `submit_evaluate.sh`）：在作业内用 `sacct` 读取 `WorkDir`/`SubmitLine` 并与脚本内生效的环境变量拼接，得到可复制的「`cd … && VAR=… sbatch …`」整行（含你覆盖的 `GC_BLOB_INPUT_MODE` 等）；与仅含 `sbatch -J … script.sh` 的 Slurm 原始 `SubmitLine` 对照使用。
 - `FuXi first step`：首步会打印 `mode`、`active`、`split`、`temb_mode`、`layout`，用于核对级联和时间嵌入配置
 
 建议每次作业先核对上述字段，再进入结果分析，避免“脚本/参数/模型路径不一致”导致误判。
 
 ## 9. 输出说明
 
+在 `output_root` 下，产物按 **起报时间 `init_tag`（如 `20260308T12`）** 再分子目录；模型子目录名为 **output slug**（与 `zk_io/rolling_paths.py` 一致）：`PanGu`→`pangu`，`FengWu`→`fengwu`，`FuXi`→`fuxi`，`GraphCast`→`graphcast`，`GraphCast_CS`→`graphcast_cs`，`GC_Official_Oper`→`GC`，`GC_Stepwise`→`GC_stepwise`。跨起报共享的目录仍留在 `output_root` 根下（如 `_capability_memory/`、`_gc_oper_cache/`）。
+
 ### 滚动推理输出
 
-- 预报 NPY：`{output_root}/{Model}/ERA5_6H/*.npy`
-- 对比图：`{output_root}/plots/{model_slug}/{init_tag}/*.png`
-- 可选 NC：`{output_root}/{init_tag}/nc/{model_slug}/lead_*.nc`
+- 预报 NPY：`{output_root}/{init_tag}/{output_slug}/*_{init_tag}.npy`（PanGu 为 `{var}_surface_{init_tag}.npy`）
+- 能力/回退审计：`{output_root}/{init_tag}/{output_slug}/meta_{init_tag}.json`
+- 对比图：`{output_root}/{init_tag}/plots/{output_slug}/*.png`
+- 可选 NC：`{output_root}/{init_tag}/nc/{output_slug}/lead_*.nc`
 
 ### 评估输出
 
-- 评估目录：`{output_root}/eval_{max_lead}h_{time_tag}/`
-- 典型产物：
-  - 指标汇总 CSV
-  - 指标时序图
-  - 可选 diff npy/nc
+- 对齐降尺度：`{output_root}/{init_tag}/eval_{max_lead}h/`
+- 多分辨率：`{output_root}/{init_tag}/eval_fidelity_nn_{max_lead}h/`、`eval_fidelity_exact_{max_lead}h/`、`eval_upscale_{max_lead}h/`
+- 典型产物：指标汇总 CSV、指标时序图、可选 diff npy/nc
+
+### 历史目录迁移
+
+- 若仍保留旧布局（`{Model}/ERA5_6H/`、`plots/{registry_slug}/{init_tag}/`、`eval_*_{init_tag}/`），评估脚本会对 NPY **优先读新路径、再回退旧路径**；整理磁盘可用 `python scripts/migrate_rolling_output_layout.py --output-root <dir> [--dry-run]`（在 `unified_pipeline/` 下执行）。
+- 若结果仍套在 `LYQ/ecmwf_init/ECMWF_Init_Infer_result_*h/` 下，可抬升到根目录 `LYQ/ecmwf_init/{init_tag}/`：`python scripts/flatten_ecmwf_init_roots.py --ecmwf-base /path/to/LYQ/ecmwf_init [--dry-run]`。与主结果同一起报、不同实验的目录会命名为 `{init_tag}_12h_ab_full_window` 等以免覆盖。
 
 ## 10. 设计日志对照审查结论
 
@@ -489,16 +563,22 @@ MODELS="pangu fengwu fuxi graphcast graphcast_cs" DATE_RANGE=20260303 INIT_HOUR=
 - GPU 利用率低
   - `WORLD_SIZE=1` 串行多模型时属于预期；可用 `WORLD_SIZE>1` + `--parallel-mode model|date` 提升并发
 - `--enable-eval` 与多卡并行（`WORLD_SIZE>1`）
-  - `parallel-mode model` 下各 rank 可能同时写同一 `eval_{max_lead}h_{init_tag}/timeseries_metrics_*.csv`，导致评估结果不完整；需要单次完整内嵌评估时请保持 `WORLD_SIZE=1`，或并行关评估后改用 `run_eval_npy.py`
+  - `parallel-mode model` 下各 rank 可能同时写同一 `{output_root}/{init_tag}/eval_{max_lead}h/timeseries_metrics_*.csv`，导致评估结果不完整；需要单次完整内嵌评估时请保持 `WORLD_SIZE=1`，或并行关评估后改用 `run_eval_npy.py`
 - 多进程滚动推理偶发 `SIGABRT` / `local_rank` 失败（FuXi 等 ONNX 模型）
-  - 实现上已对 `WORLD_SIZE>1` 仅 **rank0** 启用 `rocm-smi` 硬件监控，并对各 `LOCAL_RANK` **错峰**（默认约 `8s×LOCAL_RANK`，环境变量 `ROLLING_ORT_STAGGER_SEC` 可调）再加载模型；仍失败时请 **`WORLD_SIZE=1`** 或使用离线 `run_eval_npy`，_DCU 上多进程并行 FuXi 可能仍不稳定_
+  - 实现上已对 `WORLD_SIZE>1` 仅 **rank0** 启用 `rocm-smi` 硬件监控，并对各 `LOCAL_RANK` **错峰**（默认约 `8s×LOCAL_RANK`，环境变量 `ROLLING_ORT_STAGGER_SEC` 可调）再加载模型；仍失败时请 `**WORLD_SIZE=1`** 或使用离线 `run_eval_npy`，*DCU 上多进程并行 FuXi 可能仍不稳定*
+- **真值缓存与多 rank 并行安全**
+  - `memory` 模式：每个 rank 进程各维护独立 dict，无共享内存，无任何写冲突风险
+  - `disk` 模式：缓存路径为 `{output_root}/_truth_cache/{job_id}/rank{R}/`，含 **rank 子目录隔离**，不同 rank 写入各自目录，无跨 rank 文件竞争；单 rank 内使用 `.tmp + os.replace` 原子写防止部分写
+  - `auto` 模式（默认）：内存充裕时选 memory（进程私有），内存不足时切 disk（rank 子目录隔离），两者均安全
+  - 磁盘缓存目录在作业结束时自动删除（`KEEP_TRUTH_CACHE=0` 默认）；多个并发作业不互扰（按 `job_id` 命名子目录）
+  - 若 `skip_plots=True` 且 `enable_eval=False`，真值路径完全跳过，无任何缓存初始化或 I/O，`WORLD_SIZE` 对此无影响
 - `跳过 20260303T12（缺少起报或面场文件，未执行滚动推理）`
   - 表示 `pressure/pressure/` 与 `pressure/` 下均未找到当日的 `YYYY_MM_DD_pressure.nc`，或对应 `surface_instant.nc` **不存在**，不会进入「开始滚动推理」循环；请用 `adapter.list_dates()` 或目录列表核对 **实际有数据的日期** 再设 `DATE_RANGE`
 - FuXi 首步日志里 `tp_mean` 接近 0
   - 说明 blob 仍无可用降水：instant 无 tp **且** 不存在可读 accum、或 `tp_fallback` 为 `zero` 且填零
   - `gundong_20260324` 在提供同日 `*_surface_accum.nc` 时应出现非零 `tp_mean`（除非实况确为无降水）
 - FuXi `tp_mean` 不同但评估结果完全一致
-  - 已复核历史作业 `110330301`（`tp_mean=0`）与 `110494967`（`tp_mean=0.101713`）：两者 `timeseries_metrics_20260303T12.csv` 中 FuXi 行完全一致，且 `FuXi/ERA5_6H/{t2m,u10,v10,msl}_20260303T12.npy` 字节级一致（`max_abs_diff=0`）。
+  - 已复核历史作业 `110330301`（`tp_mean=0`）与 `110494967`（`tp_mean=0.101713`）：两者 `timeseries_metrics_20260303T12.csv` 中 FuXi 行完全一致，且（当时布局下）`FuXi/ERA5_6H/{t2m,u10,v10,msl}_20260303T12.npy` 字节级一致（`max_abs_diff=0`）。当前仓库默认布局见 §9。
   - 这说明当前模型/权重在该样本上对 TP 通道扰动未体现到评估变量（`t2m/u10/v10/msl`）；问题不在评估脚本本身。
 
 ## 12. 扩展指南
@@ -536,7 +616,7 @@ flowchart LR
 6. 补齐展示与评估映射（按需）：
   - `pipelines/rolling_pipeline.py` 的展示名映射与评估顺序
   - `pipelines/verify_pipeline.py` 的 `_verify_out_label`
-  - `run_eval_npy.py` 的 `_SLUG_TO_DISPLAY` / 默认模型列表
+  - `run_eval_npy.py` 的 `zk_io.rolling_paths.SLUG_TO_DISPLAY` / 默认模型列表
 7. 更新 README 当前章节中的“模型流程模板”（新增模型后必须补充该模型流程）。
 
 **高频坑位**
@@ -565,7 +645,7 @@ PY
 python run_verify.py --models <new_slug> --data-source test_era5 --date 20260308 --hour 12 --num-steps 1 --all-surface
 ```
 
-### 12.2 现有 5 个模型配置流程（深度）
+### 12.2 现有 7 个模型配置流程（6 个默认启用；深度）
 
 以下流程统一从 `config/data.yaml -> core/data/detector.py -> adapter.load_blob()` 开始，得到 canonical blob。
 
@@ -633,17 +713,18 @@ python run_verify.py --models <new_slug> --data-source test_era5 --date 20260308
 #### F) `graphcast_official_operational`
 
 - **配置入口**：`config/models.yaml -> models.graphcast_official_operational`
-  - 关键键：`rollout_script`、`assets_root`、`param_file`、`embed_python`、`rollout_cache_dir`
+  - 关键键：`rollout_script`、`assets_root`、`param_file`、`embed_python`、`rollout_cache_dir`、`lock_rollout_cache_dir`
 - **包装类**：`core/models/graphcast_official_operational_model.py`
   - 采用"预计算 + 缓存读取"策略，与其他模型的逐步推理不同
   - `load()`：仅存储配置（不加载 JAX 模型）
-  - `init_state()`：从 `rollout_cache_dir` 定位预计算 NPY，若不存在则通过子进程触发官方 rollout
+  - `init_state()`：从缓存目录定位预计算 NPY，若不存在则通过子进程触发官方 rollout
   - `step()`：从缓存的 NPY 栈中返回下一步预测
-  - **耗时说明**：`load()` 很轻；若缓存未命中，日志里在「开始滚动推理」之后会出现较长静默期，实为子进程一次性跑完整段 JAX rollout（与 operational 分辨率/步数有关），完成后逐步 `step()` 会很快。复用同一 `rollout_cache_dir` 可跳过该阶段。
+  - **耗时说明**：`load()` 很轻；若缓存未命中，日志里在「开始滚动推理」之后会出现较长静默期，实为子进程一次性跑完整段 JAX rollout（与 operational 分辨率/步数有关），完成后逐步 `step()` 会很快。复用同一缓存目录可跳过该阶段。
   - **子进程之后仍有间隔**：JAX 只跑那一次；rolling 仍要对每个 lead 读真值 NC、写统一 NPY、可选内嵌评估，且 `rolling_pipeline` 默认约每 8 步打一条 `lead=…h done`，故相邻两条日志之间是 **8 步的 I/O/评估**，不是再次 rollout。
 - **与 PyTorch GraphCast 的关系**：两者独立——PyTorch 版本 (`graphcast` / `graphcast_cs`) 使用 `onescience` 包内的 `GraphCastNet`；官方版本使用 DeepMind JAX `graphcast` 包 + operational `.npz` 参数
 - **提交流程**：与其它模型相同，使用 `scripts/submit_rolling.sh`；首次某 `init_tag` 若缓存目录无 NPY，会在作业内自动子进程跑官方 JAX rollout（需计算节点上 DTK + `embed_python` 可用）
 - **修改时优先检查**：`run_graphcast_official_rollout_gundong.py` 的输出变量集合需与 `_SURFACE_VARS` 一致（当前为 u10/v10/t2m/msl）
+  - 输入侧支持可选增强：若 blob 含 `pangu_w` / `surface_tp_6h`，rollout 会优先使用；缺失才零填充，并在 meta 中记录 `filled_zero_vars`
 
 #### G) `graphcast_official_operational_stepwise`（实验）
 
@@ -664,19 +745,20 @@ python run_verify.py --models <new_slug> --data-source test_era5 --date 20260308
   MODELS=graphcast_official_operational_stepwise \
     DATA_SOURCE=gundong_20260324 DATE_RANGE=20260303 INIT_HOUR=12 \
     LEAD_STEP=6 MAX_LEAD=240 SKIP_PLOTS=1 \
-    OUTPUT_ROOT=/public/share/aciwgvx1jd/GunDong_Infer_result_12h_stepwise \
+    OUTPUT_ROOT=/public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h \
     sbatch -J zk_stepwise scripts/submit_rolling.sh
 
   python scripts/compare_stepwise_vs_cache.py \
     --init-tag 20260303T12 \
     --baseline-dir /public/share/aciwgvx1jd/gc_oper_rollout_cache/GraphCast_official/ERA5_6H \
-    --stepwise-dir /public/share/aciwgvx1jd/GunDong_Infer_result_12h_stepwise/GC_Stepwise/ERA5_6H
+    --stepwise-dir /public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h_stepwise/GC_Stepwise/ERA5_6H
   ```
 
 #### H) `ecmwf_init_grib`（ECMWF/GFS 初始场 GRIB1）
 
 - **配置入口**：`config/data.yaml -> sources.ecmwf_init`
   - 关键键：`root`（含 `G_YYYYMMDDHH_fh_*.grib1` 的目录）、`format: ecmwf_init_grib`
+  - 仓库默认 `root`：`/public/share/aciwgvx1jd/ecmwf_init0/new_init`（**当前业务数据**：`G_*_fh_*.grib1` 直接位于该目录；历史上曾有 `res/`、`res2/` 子目录，现已弃用。Slurm/CLI 请使用 `--data-source ecmwf_init`，勿再写已删除的子路径。若你本地仍使用子目录，可把 `root` 指到该子目录。）
 - **适配器**：`core/data/ecmwf_init_grib_adapter.py`（`ECMWFInitGribAdapter`）
   - 使用 `pygrib` 读取 GRIB1，合并 `fh_0`（分析场）与 `fh_1`（可选，含累积降水）
   - 高空变量 shortName：`z`(geopotential) 或 `gh`(×9.80665)、`t`、`u`、`v`；湿度优先 `q`，缺失则从 `r`（RH）+ T 计算
@@ -704,7 +786,7 @@ python run_verify.py --models <new_slug> --data-source test_era5 --date 20260308
 
 为避免功能开发污染 `main`，本仓库采用分支开发 + PR 审核合并流程：
 
-1. 新需求在独立分支开发（`feature/`*、`fix/*`、`chore/*`）
+1. 新需求在独立分支开发（`feature/`*、`fix/`*、`chore/*`）
 2. 每个脚本/逻辑单元独立验证后再 commit
 3. 推送分支后创建 PR 到 `main`
 4. `pr-gate` 检查通过 + reviewer 批准后才允许合并
