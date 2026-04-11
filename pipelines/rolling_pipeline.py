@@ -513,12 +513,26 @@ def run_rolling(
 
                 _progress(f"[{display_name}] 开始滚动推理 {init_tag}，步长={step_h}h，共 {n_steps} 步")
 
-                # 初始化模型状态
+                # 逐段累计耗时（始终开启，墙钟时间）：init/推理/真值加载/NPY写/画图/评估
+                # 注：与 CPU总/GPU总（进程CPU时间/设备时间）使用不同时钟，二者不直接可加。
+                _stage_cum: Dict[str, float] = {
+                    "init_state_s": 0.0,
+                    "model_step_s": 0.0,
+                    "truth_load_s": 0.0,
+                    "npy_write_s": 0.0,
+                    "nc_write_s": 0.0,
+                    "plot_s": 0.0,
+                    "eval_s": 0.0,
+                }
+
+                # 初始化模型状态（对于 GC_Official 等全量推理模型，推理在此完成）
+                _t_init = time.perf_counter()
                 try:
                     state = model.init_state(init_blob, prev_blob=prev_blob, init_dt=init_dt)
                 except (ValueError, RuntimeError, FileNotFoundError) as e:
                     _progress(f"[{display_name}] init_state 失败: {e}")
                     continue
+                _stage_cum["init_state_s"] += time.perf_counter() - _t_init
 
                 if enable_eval and eval_run_downscale:
                     if init_tag not in acc_by_tag:
@@ -544,15 +558,6 @@ def run_rolling(
                         progress_fn=_progress,
                     )
 
-                # 逐段累计耗时（始终开启）：推理/真值加载/NPY写/画图/评估
-                _stage_cum: Dict[str, float] = {
-                    "model_step_s": 0.0,
-                    "truth_load_s": 0.0,
-                    "npy_write_s": 0.0,
-                    "nc_write_s": 0.0,
-                    "plot_s": 0.0,
-                    "eval_s": 0.0,
-                }
                 # 可选：中间过程窗口输出（ROLLING_STEP_PROFILE=1 时每 N 帧打印一次窗口均值）
                 step_profile_enabled = _env_true("ROLLING_STEP_PROFILE", "0")
                 try:
@@ -774,10 +779,13 @@ def run_rolling(
 
                 _progress(f"[{display_name}] {init_tag} NPY 已保存: {npy_writer.get_paths()}")
 
-                # ── 各阶段累计耗时汇总（始终输出）──
+                # ── 各阶段累计墙钟时间汇总（始终输出；与 CPU总/GPU总 使用不同时钟，不可直接相加）──
                 _n_f = max(1, len(leads))
-                _stage_parts = [
-                    f"model_step={_stage_cum['model_step_s']:.1f}s"
+                _stage_parts = []
+                if _stage_cum["init_state_s"] > 0.05:
+                    _stage_parts.append(f"init={_stage_cum['init_state_s']:.1f}s")
+                _stage_parts += [
+                    f"step={_stage_cum['model_step_s']:.1f}s"
                     f"({_stage_cum['model_step_s']/_n_f:.2f}s/f)",
                     f"truth={_stage_cum['truth_load_s']:.1f}s",
                     f"npy={_stage_cum['npy_write_s']:.1f}s",
@@ -787,7 +795,7 @@ def run_rolling(
                 if _stage_cum["nc_write_s"] > 0:
                     _stage_parts.append(f"nc={_stage_cum['nc_write_s']:.1f}s")
                 _progress(
-                    f"[{display_name}] [stage_totals] {init_tag}  " + "  ".join(_stage_parts)
+                    f"[{display_name}] [stage_totals(wall)] {init_tag}  " + "  ".join(_stage_parts)
                 )
 
                 model_fallback_used.extend(npy_writer.get_missing_events())
