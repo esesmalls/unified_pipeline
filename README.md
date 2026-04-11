@@ -828,7 +828,7 @@ gh pr create --base main --head feature/your-topic
 维护要求：
 
 1. 对功能/修复/配置/流程改动，PR 必须同步更新 `CHANGELOG.md`（或在 PR 里说明 `N/A` 原因）。
-2. 优先写入 `Unreleased` 区域，合并后整理为具体版本块。
+2. 在功能分支上累积变更说明；合并至 `main` 前在 `CHANGELOG.md` 中整理为 `vX.Y.Z` 版本块（业务化滚动推理当前基线见 **v0.3.0**）。
 3. 每条版本记录至少包含：
   - Version
   - DateTime
