@@ -83,7 +83,7 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 - **发布日期**：2026-04-11
 - **主开发分支**：`feature/graphcast-official-operational`（已合并）
 - **合并至 `main`**：merge commit [`e8db910`](https://github.com/esesmalls/unified_pipeline/commit/e8db9102904f504731de6f7d2f88c899d85b195d)（`将当前的业务化脚本库同步入主分支`）。GitHub 上可在仓库 **Pull requests → Closed** 查看对应合并 PR。
-- **Git 标签**：`v0.3.0` 指向 **`main` 上含本条目与合并说明的提交**（合并完成后由维护者打标签并 `git push origin v0.3.0`）。
+- **Git 标签**：[`v0.3.0`](https://github.com/esesmalls/unified_pipeline/releases/tag/v0.3.0) 已推送至 `origin`（指向含本合并说明文档的 `main` 提交）。
 
 ### Related commits
 
