@@ -28,6 +28,7 @@ FuXi 新策略（config/models.yaml）：
   cascade_split_step: 20         # 默认前20步 short，后续 medium
   temb_mode: zforecast|legacy    # 默认 zforecast（参考 zforecast.py）
   tp_fallback: zero|error        # 缺失 surface_tp_6h 时回退行为
+  tp单位: 保持数据源原始单位（ERA5 常见为 m），不做 m->mm 放大
 
 排查建议：
   1) 看 rolling 日志首个 [FuXi] first step，确认 mode/active/split/temb_mode/layout

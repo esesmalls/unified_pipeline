@@ -1,9 +1,11 @@
 """
 GunDong 20260324 格式适配器。
 
-目录布局：
-  {root}/pressure/pressure/YYYY_MM_DD_pressure.nc
+目录布局（气压文件二者任一即可）：
+  {root}/pressure/pressure/YYYY_MM_DD_pressure.nc（历史嵌套目录）
+  {root}/pressure/YYYY_MM_DD_pressure.nc（扁平布局，与当前 /public/share/.../20260324 一致）
   {root}/surface/YYYY_MM_DD_surface_instant.nc
+  {root}/surface/YYYY_MM_DD_surface_accum.nc（可选；含 tp 时补充 FuXi 所需的 surface_tp_6h）
 
 重构自 GunDong_Infer/data_adapter_20260324.py。
 """
@@ -32,11 +34,54 @@ def _dkey(date_yyyymmdd: str) -> str:
     return f"{date_yyyymmdd[:4]}_{date_yyyymmdd[4:6]}_{date_yyyymmdd[6:8]}"
 
 
+def _pressure_nc_path(root: Path, date_yyyymmdd: str) -> Path:
+    """优先嵌套 pressure/pressure/，否则使用 pressure/ 扁平布局。"""
+    stem = _dkey(date_yyyymmdd)
+    nested = root / "pressure" / "pressure" / f"{stem}_pressure.nc"
+    flat = root / "pressure" / f"{stem}_pressure.nc"
+    if nested.is_file():
+        return nested
+    if flat.is_file():
+        return flat
+    raise FileNotFoundError(
+        f"missing {stem}_pressure.nc (tried {nested} | {flat})"
+    )
+
+
 def _day_paths(root: Path, date_yyyymmdd: str) -> Tuple[Path, Path]:
     stem = _dkey(date_yyyymmdd)
-    p = root / "pressure" / "pressure" / f"{stem}_pressure.nc"
     s = root / "surface" / f"{stem}_surface_instant.nc"
-    return p, s
+    return _pressure_nc_path(root, date_yyyymmdd), s
+
+
+def _accum_surface_path(root: Path, date_yyyymmdd: str) -> Path:
+    stem = _dkey(date_yyyymmdd)
+    return root / "surface" / f"{stem}_surface_accum.nc"
+
+
+def _try_load_tp_from_accum(
+    root: Path, date_yyyymmdd: str, hour: int
+) -> Optional[np.ndarray]:
+    """
+    instant 面文件无 tp 时，从同日 surface_accum 读取累计降水，供 FuXi 等指标用。
+    """
+    path = _accum_surface_path(root, date_yyyymmdd)
+    if not path.is_file():
+        return None
+    da = Dataset(str(path))
+    try:
+        s_time = np.array(da.variables["valid_time"][:], dtype=np.int64)
+        s_i = _find_hour_index(s_time, hour)
+        lat_a = np.array(da.variables["latitude"][:], dtype=np.float32)
+        for cand in ("tp", "total_precipitation", "tp6", "tp_6h"):
+            if cand not in da.variables:
+                continue
+            raw = np.array(da.variables[cand][s_i], dtype=np.float32)
+            raw, _ = _ensure_ns_lat(raw, lat_a)
+            return _tp_netcdf_to_6h(da.variables[cand], raw)
+    finally:
+        da.close()
+    return None
 
 
 def _ensure_ns_lat(data: np.ndarray, lat: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -59,18 +104,11 @@ def _msl_netcdf_to_pa(msl_var, arr: np.ndarray) -> np.ndarray:
 
 def _tp_netcdf_to_6h(tp_var, arr: np.ndarray) -> np.ndarray:
     """
-    TP 转换到 6h 累计（surface_tp_6h）统一单位：
-    - 常见 ERA5 tp 为 m，转换为 mm
-    - 若已是 mm，保持不变
+    TP 转换到 6h 累计（surface_tp_6h）单位策略：
+    - 保持数据源原始单位（通常 ERA5 为 m）
+    - 与 zforecast/FuXi 既有链路对齐，避免量纲放大
     """
-    try:
-        u = str(getattr(tp_var, "units", "") or "").strip().lower()
-    except Exception:
-        u = ""
-    a = np.asarray(arr, dtype=np.float32)
-    if u in ("m", "meter", "meters", "metre", "metres"):
-        return (a * 1000.0).astype(np.float32)
-    return a
+    return np.asarray(arr, dtype=np.float32)
 
 
 def _find_hour_index(ts_sec: np.ndarray, hour: int) -> int:
@@ -109,8 +147,6 @@ class GunDongAdapter(DataAdapter):
 
     def load_blob(self, date_yyyymmdd: str, hour: int) -> Dict[str, np.ndarray]:
         p_nc, s_nc = _day_paths(self.root, date_yyyymmdd)
-        if not p_nc.is_file():
-            raise FileNotFoundError(p_nc)
         if not s_nc.is_file():
             raise FileNotFoundError(s_nc)
 
@@ -154,6 +190,9 @@ class GunDongAdapter(DataAdapter):
             dp.close()
             ds.close()
 
+        if tp_6h is None:
+            tp_6h = _try_load_tp_from_accum(self.root, date_yyyymmdd, hour)
+
         tgt = np.asarray(PANGU_LEVELS, dtype=np.float64)
         z13 = _interp_levels(z_s, p_levels, tgt)
         q13 = _interp_levels(q_s, p_levels, tgt)
@@ -178,16 +217,16 @@ class GunDongAdapter(DataAdapter):
         }
 
     def list_dates(self) -> List[str]:
-        pdir = self.root / "pressure" / "pressure"
-        if not pdir.is_dir():
-            return []
-        out: List[str] = []
-        for p in sorted(pdir.glob("*_pressure.nc")):
-            name = p.name  # YYYY_MM_DD_pressure.nc
-            parts = name.split("_")
-            if len(parts) >= 3:
-                try:
-                    out.append(f"{parts[0]}{parts[1]}{parts[2]}")
-                except IndexError:
-                    pass
-        return out
+        collected: set[str] = set()
+        for pdir in (self.root / "pressure" / "pressure", self.root / "pressure"):
+            if not pdir.is_dir():
+                continue
+            for p in pdir.glob("*_pressure.nc"):
+                name = p.name
+                parts = name.split("_")
+                if len(parts) >= 3:
+                    try:
+                        collected.add(f"{parts[0]}{parts[1]}{parts[2]}")
+                    except IndexError:
+                        pass
+        return sorted(collected)

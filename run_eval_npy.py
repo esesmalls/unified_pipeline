@@ -40,7 +40,10 @@ from core.evaluation.metrics import MetricsAccumulator
 from pipelines.rolling_pipeline import _load_data_source, _parse_date_range
 from zk_io.plot_utils import plot_compare
 
-_EVAL_MODEL_ORDER = ["PanGu", "FengWu", "FuXi", "GraphCast", "GraphCast_CS"]
+_EVAL_MODEL_ORDER = [
+    "PanGu", "FengWu", "FuXi", "GraphCast", "GraphCast_CS",
+    "GC_Official_Oper", "GC_Stepwise",
+]
 
 _SLUG_TO_DISPLAY = {
     "pangu": "PanGu",
@@ -48,6 +51,8 @@ _SLUG_TO_DISPLAY = {
     "fuxi": "FuXi",
     "graphcast": "GraphCast",
     "graphcast_cs": "GraphCast_CS",
+    "graphcast_official_operational": "GC_Official_Oper",
+    "graphcast_official_operational_stepwise": "GC_Stepwise",
 }
 
 
@@ -96,6 +101,7 @@ def run_eval_from_npy(
     save_diff_nc: bool,
     data_cfg_path: Path,
     spatial_plots: bool,
+    truth_source: str | None = None,
 ) -> None:
     n_steps = max_lead // lead_step
     leads = list(range(lead_step, max_lead + 1, lead_step))
@@ -108,6 +114,15 @@ def run_eval_from_npy(
         fmt=data_fmt,
         use_monthly_subdir=src_cfg.get("use_monthly_subdir", False),
     )
+
+    if truth_source and truth_source != data_source:
+        t_root, t_fmt, t_cfg = _load_data_source(truth_source, data_cfg_path)
+        truth_adapter = get_adapter(
+            t_root, fmt=t_fmt,
+            use_monthly_subdir=t_cfg.get("use_monthly_subdir", False),
+        )
+    else:
+        truth_adapter = adapter
 
     dates = _parse_date_range(date_range)
     for date in dates:
@@ -147,7 +162,7 @@ def run_eval_from_npy(
             if si >= n_steps:
                 break
             valid_dt = init_dt + timedelta(hours=current_lead)
-            truth_blob = adapter.load_blob_for_valid_time(valid_dt)
+            truth_blob = truth_adapter.load_blob_for_valid_time(valid_dt)
             if truth_blob is None:
                 print(f"[eval_npy] 无真值 valid={valid_dt}, lead={current_lead}h", flush=True)
                 continue
@@ -211,8 +226,9 @@ def main() -> None:
     ap.add_argument(
         "--models",
         nargs="+",
-        default=["pangu", "fengwu", "fuxi", "graphcast", "graphcast_cs"],
-        help="模型 slug：pangu fengwu fuxi graphcast",
+        default=["pangu", "fengwu", "fuxi", "graphcast", "graphcast_cs",
+                 "graphcast_official_operational"],
+        help="模型 slug：pangu fengwu fuxi graphcast graphcast_cs graphcast_official_operational",
     )
     ap.add_argument(
         "--variables",
@@ -228,6 +244,13 @@ def main() -> None:
     ap.add_argument("--save-diff", action="store_true")
     ap.add_argument("--save-diff-nc", action="store_true")
     ap.add_argument("--data-config", type=Path, default=_ZK_ROOT / "config" / "data.yaml")
+    ap.add_argument(
+        "--truth-source", default=None,
+        help=(
+            "评估真值数据源（config/data.yaml key 或路径），默认同 --data-source。"
+            "示例：--data-source ecmwf_init --truth-source gundong_20260324"
+        ),
+    )
     ap.add_argument(
         "--spatial-plots",
         action="store_true",
@@ -249,6 +272,7 @@ def main() -> None:
         save_diff_nc=args.save_diff_nc,
         data_cfg_path=args.data_config,
         spatial_plots=args.spatial_plots,
+        truth_source=args.truth_source,
     )
 
 

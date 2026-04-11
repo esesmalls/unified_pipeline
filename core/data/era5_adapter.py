@@ -99,6 +99,7 @@ class ERA5FlatAdapter(DataAdapter):
             t_s = read_pres("t")
             u_s = read_pres("u")
             v_s = read_pres("v")
+            w_s = read_pres("w") if "w" in dp.variables else None
 
             lat_s = np.array(ds.variables["latitude"][:], dtype=np.float32)
 
@@ -126,6 +127,7 @@ class ERA5FlatAdapter(DataAdapter):
         t13 = _interp_levels(t_s, p_levels, tgt)
         u13 = _interp_levels(u_s, p_levels, tgt)
         v13 = _interp_levels(v_s, p_levels, tgt)
+        w13 = _interp_levels(w_s, p_levels, tgt) if w_s is not None else None
 
         return {
             "surface_msl": msl,
@@ -138,6 +140,7 @@ class ERA5FlatAdapter(DataAdapter):
             "pangu_t": t13,
             "pangu_u": u13,
             "pangu_v": v13,
+            **({"pangu_w": w13} if w13 is not None else {}),
             "pressure_src": p_levels.astype(np.float32),
             "lat": _STD_LAT,
             "lon": _STD_LON,

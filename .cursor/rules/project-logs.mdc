@@ -1,0 +1,12 @@
+---
+description: Local Slurm and hardware logs live under unified_pipeline/logs (gitignored); agents must read them when diagnosing jobs.
+globs:
+alwaysApply: true
+---
+
+# `logs/` directory (this repo)
+
+- **Path**: `ZK_Models/unified_pipeline/logs/` (repository root for this pipeline).
+- **Contents** (typical): `rolling_<JOBID>.out` / `.err`, `evaluate_<JOBID>.out`, `hardware_<JOBID>_*.log` — driven by `#SBATCH -o/-e` in `scripts/submit_rolling.sh`, `scripts/submit_evaluate.sh`, etc., when `sbatch` is run from `unified_pipeline/`.
+- **`logs/` is in `.gitignore`**: workspace search or `git status` may hide these files; **do not conclude logs are missing** without `ls`, `rg`, or `Read` on explicit paths.
+- When the user cites a Slurm job id or rolling/evaluate failure: **open `logs/rolling_<id>.out` (and `.err`) or `grep <id> logs/` first**, then optional outputs under `OUTPUT_ROOT` (e.g. `meta_*.json`, `eval_*`).

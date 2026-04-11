@@ -19,6 +19,12 @@ sources:
     description: "业务化 GunDong 格式 ERA5（pressure/pressure/ + surface/）"
     default_pipeline: rolling
 
+  ecmwf_init:
+    format: ecmwf_init_grib              # → core/data/ecmwf_init_grib_adapter.py
+    root: "/public/share/aciwgvx1jd/ecmwf_init0/new_init"
+    description: "ECMWF 初始场 GRIB1（G_YYYYMMDDHH_fh_{0,1}.grib1），pygrib 读取"
+    default_pipeline: rolling
+
   # ------- 扩展占位：未来新数据源示例 -------
   # my_custom_data:
   #   format: era5_flat                  # 复用现有 Adapter，调整 root 即可

@@ -143,6 +143,7 @@ def blob_to_fuxi_70ch(
     blob: Dict[str, np.ndarray],
     tp_fill: float = 0.0,
     tp_fallback: str = "zero",
+    on_fallback=None,
 ) -> np.ndarray:
     """
     70 通道单帧（FuXi 物理顺序）：
@@ -164,6 +165,12 @@ def blob_to_fuxi_70ch(
         raise ValueError("FuXi 70ch 需要 surface_tp_6h，但当前 blob 缺失该字段。")
     else:
         tp = np.full_like(blob["surface_msl"], tp_fill, dtype=np.float32)
+        if on_fallback is not None:
+            on_fallback(
+                channel="surface_tp_6h",
+                strategy="zero_fill",
+                detail=f"FuXi tp fallback with tp_fill={tp_fill}",
+            )
     s5 = np.stack(
         [
             blob["surface_t2m"],
@@ -183,10 +190,21 @@ def blobs_to_fuxi_2frame(
     blob_now: Dict[str, np.ndarray],
     tp_fill: float = 0.0,
     tp_fallback: str = "zero",
+    on_fallback=None,
 ) -> np.ndarray:
     """shape: (2, 70, H, W) float32"""
-    f0 = blob_to_fuxi_70ch(blob_prev, tp_fill=tp_fill, tp_fallback=tp_fallback)
-    f1 = blob_to_fuxi_70ch(blob_now, tp_fill=tp_fill, tp_fallback=tp_fallback)
+    f0 = blob_to_fuxi_70ch(
+        blob_prev,
+        tp_fill=tp_fill,
+        tp_fallback=tp_fallback,
+        on_fallback=on_fallback,
+    )
+    f1 = blob_to_fuxi_70ch(
+        blob_now,
+        tp_fill=tp_fill,
+        tp_fallback=tp_fallback,
+        on_fallback=on_fallback,
+    )
     return np.stack([f0, f1], axis=0).astype(np.float32)
 
 
@@ -296,6 +314,8 @@ PRESSURE_VAR_KEYS = {
 def extract_surface_vars(
     blob: Dict[str, np.ndarray],
     var_names: Optional[List[str]] = None,
+    strict: bool = False,
+    on_missing=None,
 ) -> Dict[str, np.ndarray]:
     """
     从 blob 中提取地表变量。
@@ -307,6 +327,11 @@ def extract_surface_vars(
         bkey = SURFACE_VAR_KEYS.get(k, k)
         if bkey in blob:
             result[k] = blob[bkey]
+        else:
+            if on_missing is not None:
+                on_missing(k, bkey)
+            if strict:
+                raise KeyError(f"缺少地表变量: {k} (blob key={bkey})")
     return result
 
 

@@ -14,7 +14,7 @@
 #   conda activate torch2.4_dtk25.04_cp310_e2s
 #   python run_eval_npy.py --data-source gundong_20260324 \\
 #     --date-range 20260310 --init-hour 12 --max-lead 240 \\
-#     --models pangu fengwu fuxi graphcast --output-root /path/to/GunDong_Infer_result_12h
+#     --models pangu fengwu fuxi graphcast --output-root /path/to/LYQ/gundong
 #
 # 用法示例：
 #   sbatch scripts/submit_rolling.sh
@@ -41,25 +41,14 @@
 
 set -euo pipefail
 
-# ---- 工作目录 ----
-WORKDIR="/public/home/aciwgvx1jd/new-onescience/onescience/examples/earth/graphcast"
-ZK_LEGACY="${WORKDIR}/ZK_Models"
-UNIFIED_ROOT="${ZK_LEGACY}/unified_pipeline"
-ZK_ROOT="${ZK_LEGACY}"
-LOG_DIR="${ZK_ROOT}/logs"
-mkdir -p "${LOG_DIR}"
-
-# ==============================================================
-# ---- 环境选择（通过环境变量覆盖）----
-# CONDA_ENV:   conda 环境名称，默认 torch2.4_dtk25.04_cp310_e2s
-# CONDA_BASE:  miniconda/anaconda 根目录，默认自动探测
-# DTK_VERSION: 编译器/DTK 版本，默认 25.04（留空则跳过 module load）
-# USE_CUDA:    1 = 使用 CUDA 模式而非 ROCm/DCU（默认 0）
-# ==============================================================
-CONDA_ENV="${CONDA_ENV:-torch2.4_dtk25.04_cp310_e2s}"
-CONDA_BASE="${CONDA_BASE:-}"
-DTK_VERSION="${DTK_VERSION:-25.04}"
-USE_CUDA="${USE_CUDA:-0}"
+# ---- 共享环境设置（conda / DTK / 路径）----
+# Slurm copies batch scripts to spool; $0 is not the repo path. Use absolute path.
+_COMMON_SH="/public/home/aciwgvx1jd/new-onescience/onescience/examples/earth/graphcast/ZK_Models/unified_pipeline/scripts/_common.sh"
+if [ ! -f "${_COMMON_SH}" ]; then
+    # Fallback: running from repo dir directly (non-Slurm)
+    _COMMON_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+fi
+source "${_COMMON_SH}"
 
 # ---- 可配置参数 ----
 MODELS="${MODELS:-all}"
@@ -69,14 +58,42 @@ INIT_HOUR="${INIT_HOUR:-12}"
 LEAD_STEP="${LEAD_STEP:-6}"
 MAX_LEAD="${MAX_LEAD:-240}"
 VARIABLES="${VARIABLES:-}"                # 空=模型默认全地表变量
-OUTPUT_ROOT="${OUTPUT_ROOT:-/public/share/aciwgvx1jd/GunDong_Infer_result_12h}"
+if [ -z "${OUTPUT_ROOT+x}" ]; then
+  if [ "${DATA_SOURCE}" = "ecmwf_init" ] || [[ "${DATA_SOURCE}" == *"ecmwf_init"* ]]; then
+    OUTPUT_ROOT="/public/share/aciwgvx1jd/LYQ/ecmwf_init"
+  else
+    OUTPUT_ROOT="/public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h"
+  fi
+fi
 DEVICE="${DEVICE:-auto}"
 SKIP_PLOTS="${SKIP_PLOTS:-0}"
+# 1=run_rolling.py --cpu-timing-exclude-plots（日志 [timing] CPU 不含逐步出图）
+CPU_TIMING_EXCLUDE_PLOTS="${CPU_TIMING_EXCLUDE_PLOTS:-0}"
 SAVE_NC="${SAVE_NC:-0}"
 ENABLE_EVAL="${ENABLE_EVAL:-0}"           # 1=开启内嵌评估
 SAVE_DIFF="${SAVE_DIFF:-0}"              # 1=保存 diff npy（需 ENABLE_EVAL=1）
 SAVE_DIFF_NC="${SAVE_DIFF_NC:-0}"        # 1=保存 diff nc（需 ENABLE_EVAL=1）
 METRICS="${METRICS:-W-MAE W-RMSE}"
+# 多分辨率评估（需 ENABLE_EVAL=1；细网格 ecmwf_init GRIB 真值时可用）
+# EVAL_MODES 例: "downscale fidelity_nn upscale" 或仅 "fidelity_nn"（跳过对齐降尺度 CSV）
+EVAL_MODES="${EVAL_MODES:-}"
+FIDELITY_MAX_DEG="${FIDELITY_MAX_DEG:-}"
+AUTO_MULTIGRID="${AUTO_MULTIGRID:-0}"     # 1=未设 EVAL_MODES 时自动加 fidelity_nn+upscale
+# GC 官方模型输入构造策略（models.yaml 默认为 init_only；可用 GC_BLOB_INPUT_MODE 覆盖）：
+#   init_only: 仅预存[-step,0]初始化 blob（默认）
+#   full_window: 预存[-step,0,+6h..+max+step] blob，缺失时 forward reuse
+GC_BLOB_INPUT_MODE="${GC_BLOB_INPUT_MODE:-}"
+
+# ---- 真值缓存策略 ----
+# TRUTH_CACHE_MODE:          auto（默认）| memory | disk
+#   auto   — 运行时估算内存，自动选择 memory 或 disk
+#   memory — 进程级缓存，模型切换不清理，适合内存宽裕场景
+#   disk   — 磁盘缓存（output_root/_truth_cache/{job_id}/rank{R}/…），内存受限时用
+# 当 SKIP_PLOTS=1 且 ENABLE_EVAL=0 时，真值路径完全短路，以下参数不生效
+TRUTH_CACHE_MODE="${TRUTH_CACHE_MODE:-auto}"
+TRUTH_CACHE_BUDGET_RATIO="${TRUTH_CACHE_BUDGET_RATIO:-0.4}"
+TRUTH_CACHE_SAFETY_FACTOR="${TRUTH_CACHE_SAFETY_FACTOR:-1.3}"
+KEEP_TRUTH_CACHE="${KEEP_TRUTH_CACHE:-0}"    # 1=作业结束后保留磁盘缓存（调试用）
 
 # ---- 多卡并行策略 ----
 # WORLD_SIZE:      并行进程数（默认 1=单进程）
@@ -86,9 +103,83 @@ METRICS="${METRICS:-W-MAE W-RMSE}"
 #   model — 单日任务：1天 × 4模型 × WORLD_SIZE=4 → 每卡 1 个模型
 WORLD_SIZE="${WORLD_SIZE:-1}"
 PARALLEL_MODE="${PARALLEL_MODE:-auto}"
+# 多作业同时跑 torchrun 时避免同节点 master 端口冲突（例：并行作业 B 可设 MASTER_PORT=29501）
+MASTER_PORT="${MASTER_PORT:-29500}"
 # Slurm 将批处理脚本复制到 spool（$0 常为 .../slurm_script），不代表仓库路径
 SCRIPT_PATH="${UNIFIED_ROOT}/scripts/submit_rolling.sh"
 PY_ENTRY="${UNIFIED_ROOT}/run_rolling.py"
+
+# ---- 在作业日志中输出可复制的 sbatch 复现命令 ----
+# 注意：sacct 的 SubmitLine 不含「VAR=value sbatch …」里的环境变量前缀，此处用当前生效变量拼接。
+_sb_q() { printf '%q' "$1"; }
+
+_emit_sbatch_repro_rolling() {
+    shopt -s extglob 2>/dev/null || true
+    local wd="" sl="" raw=""
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        raw=$(sacct -j "${SLURM_JOB_ID}" -X -n --format=WorkDir,SubmitLine --parsable2 --noheader 2>/dev/null | head -1)
+        if [[ -n "${raw}" ]]; then
+            wd="${raw%%|*}"
+            sl="${raw#*|}"
+        fi
+    fi
+    local subdir="${SLURM_SUBMIT_DIR:-${wd}}"
+    [[ -z "${subdir}" ]] && subdir="${UNIFIED_ROOT}"
+    echo "[info] sbatch_repro_workdir=${wd:-n/a}"
+    echo "[info] sbatch_repro_submit_dir=$(_sb_q "${subdir}")"
+    [[ -n "${sl}" ]] && echo "[info] sbatch_repro_slurm_submit_line=${sl}"
+    local ep=""
+    ep+="CONDA_ENV=$(_sb_q "${CONDA_ENV}") "
+    if [[ -n "${CONDA_BASE:-}" ]]; then ep+="CONDA_BASE=$(_sb_q "${CONDA_BASE}") "; fi
+    ep+="DTK_VERSION=$(_sb_q "${DTK_VERSION}") "
+    ep+="USE_CUDA=$(_sb_q "${USE_CUDA}") "
+    ep+="MODELS=$(_sb_q "${MODELS}") "
+    ep+="DATA_SOURCE=$(_sb_q "${DATA_SOURCE}") "
+    ep+="DATE_RANGE=$(_sb_q "${DATE_RANGE}") "
+    ep+="INIT_HOUR=$(_sb_q "${INIT_HOUR}") "
+    ep+="LEAD_STEP=$(_sb_q "${LEAD_STEP}") "
+    ep+="MAX_LEAD=$(_sb_q "${MAX_LEAD}") "
+    ep+="OUTPUT_ROOT=$(_sb_q "${OUTPUT_ROOT}") "
+    ep+="DEVICE=$(_sb_q "${DEVICE}") "
+    ep+="SKIP_PLOTS=$(_sb_q "${SKIP_PLOTS}") "
+    ep+="CPU_TIMING_EXCLUDE_PLOTS=$(_sb_q "${CPU_TIMING_EXCLUDE_PLOTS}") "
+    ep+="SAVE_NC=$(_sb_q "${SAVE_NC}") "
+    ep+="ENABLE_EVAL=$(_sb_q "${ENABLE_EVAL}") "
+    ep+="SAVE_DIFF=$(_sb_q "${SAVE_DIFF}") "
+    ep+="SAVE_DIFF_NC=$(_sb_q "${SAVE_DIFF_NC}") "
+    ep+="METRICS=$(_sb_q "${METRICS}") "
+    if [[ -n "${EVAL_MODES}" ]]; then
+        ep+="EVAL_MODES=$(_sb_q "${EVAL_MODES}") "
+    fi
+    if [[ -n "${FIDELITY_MAX_DEG}" ]]; then
+        ep+="FIDELITY_MAX_DEG=$(_sb_q "${FIDELITY_MAX_DEG}") "
+    fi
+    ep+="AUTO_MULTIGRID=$(_sb_q "${AUTO_MULTIGRID}") "
+    if [[ -n "${GC_BLOB_INPUT_MODE}" ]]; then
+        ep+="GC_BLOB_INPUT_MODE=$(_sb_q "${GC_BLOB_INPUT_MODE}") "
+    fi
+    ep+="WORLD_SIZE=$(_sb_q "${WORLD_SIZE}") "
+    ep+="PARALLEL_MODE=$(_sb_q "${PARALLEL_MODE}") "
+    ep+="MASTER_PORT=$(_sb_q "${MASTER_PORT}") "
+    ep+="TRUTH_CACHE_MODE=$(_sb_q "${TRUTH_CACHE_MODE}") "
+    ep+="TRUTH_CACHE_BUDGET_RATIO=$(_sb_q "${TRUTH_CACHE_BUDGET_RATIO}") "
+    ep+="TRUTH_CACHE_SAFETY_FACTOR=$(_sb_q "${TRUTH_CACHE_SAFETY_FACTOR}") "
+    ep+="KEEP_TRUTH_CACHE=$(_sb_q "${KEEP_TRUTH_CACHE}") "
+    if [[ -n "${VARIABLES}" ]]; then
+        ep+="VARIABLES=$(_sb_q "${VARIABLES}") "
+    fi
+    ep="${ep%%+([[:space:]])}"
+    echo "[info] sbatch_repro_env_snapshot=${ep}"
+    local sbrest=""
+    if [[ "${sl}" =~ ^sbatch[[:space:]]+(.+)[[:space:]]([^[:space:]]+\.sh)$ ]]; then
+        sbrest="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "${sbrest}" ]]; then
+        echo "[info] sbatch_repro_copy_paste: cd $(_sb_q "${subdir}") && ${ep} sbatch ${sbrest} $(_sb_q "${SCRIPT_PATH}")"
+    else
+        echo "[info] sbatch_repro_copy_paste: cd $(_sb_q "${subdir}") && ${ep} sbatch $(_sb_q "${SCRIPT_PATH}")"
+    fi
+}
 
 # ---- DCU / CPU 说明（Slurm 配额）----
 # 逐模型串行 + WORLD_SIZE=1 时，同一时间只有 1 张 DCU 在跑推理，其余卡空闲属正常；
@@ -116,76 +207,9 @@ echo "[info] date_range=${DATE_RANGE}"
 echo "[info] init_hour=${INIT_HOUR}  lead_step=${LEAD_STEP}  max_lead=${MAX_LEAD}"
 echo "[info] output=${OUTPUT_ROOT}"
 echo "[info] enable_eval=${ENABLE_EVAL}"
+echo "[info] skip_plots=${SKIP_PLOTS}  cpu_timing_exclude_plots=${CPU_TIMING_EXCLUDE_PLOTS}"
+echo "[info] truth_cache_mode=${TRUTH_CACHE_MODE}  budget_ratio=${TRUTH_CACHE_BUDGET_RATIO}  safety_factor=${TRUTH_CACHE_SAFETY_FACTOR}  keep=${KEEP_TRUTH_CACHE}"
 echo "=========================================="
-
-# ==============================================================
-# ---- 激活 conda 环境 ----
-# ==============================================================
-_activate_conda() {
-    if [ -n "${CONDA_BASE}" ]; then
-        local init_sh="${CONDA_BASE}/etc/profile.d/conda.sh"
-        if [ -f "${init_sh}" ]; then
-            source "${init_sh}"
-            return 0
-        fi
-    fi
-    for candidate in \
-        "/public/home/aciwgvx1jd/miniconda3" \
-        "/public/home/aciwgvx1jd/anaconda3" \
-        "${HOME}/miniconda3" \
-        "${HOME}/anaconda3" \
-        "/opt/miniconda3" \
-        "/opt/conda"
-    do
-        if [ -f "${candidate}/etc/profile.d/conda.sh" ]; then
-            source "${candidate}/etc/profile.d/conda.sh"
-            CONDA_BASE="${candidate}"
-            return 0
-        fi
-    done
-    echo "[warn] 未找到 conda 初始化脚本，尝试直接激活..."
-    return 1
-}
-
-_activate_conda || true
-conda activate "${CONDA_ENV}"
-echo "[info] 已激活 conda 环境: $(conda info --envs | grep '*' | awk '{print $1}')"
-
-# ==============================================================
-# ---- 加载 DTK / CUDA 模块 ----
-# ==============================================================
-module purge
-if [ "${USE_CUDA}" = "1" ]; then
-    echo "[info] USE_CUDA=1，跳过 DTK module，使用 CUDA 模式"
-    export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-else
-    if [ -n "${DTK_VERSION}" ]; then
-        module load "compiler/dtk/${DTK_VERSION}"
-        echo "[info] 已加载 compiler/dtk/${DTK_VERSION}"
-    else
-        echo "[warn] DTK_VERSION 为空，跳过 module load"
-    fi
-    export LD_LIBRARY_PATH=${ROCM_PATH:+$ROCM_PATH/lib:$ROCM_PATH/hip/lib:$ROCM_PATH/llvm/lib:$ROCM_PATH/miopen/lib:}${LD_LIBRARY_PATH:-}
-    export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
-    export HSA_ENABLE_SDMA=0
-    export HSA_ENABLE_SDMA_GANG=0
-    export HSA_FORCE_FINE_GRAIN_PCIE=1
-    export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-fi
-
-export DGL_GRAPHBOLT=0
-export DGL_USE_GRAPHBOLT=0
-export DGL_LOAD_GRAPHBOLT=0
-export OMP_NUM_THREADS=16
-unset PYTHONPATH || true
-
-# ---- 环境校验 ----
-echo "[info] Python: $(python --version 2>&1)"
-python -c "import torch; print('[info] torch', torch.__version__, '| cuda?', torch.cuda.is_available())" || true
-python -c "import onnxruntime as ort; print('[info] ORT providers:', ort.get_available_providers())" || true
-
-cd "${WORKDIR}"
 
 # ---- 构建参数 ----
 ARGS=()
@@ -210,11 +234,23 @@ fi
 if [ "${SKIP_PLOTS}" = "1" ]; then
     ARGS+=(--skip-plots)
 fi
+if [ "${CPU_TIMING_EXCLUDE_PLOTS}" = "1" ]; then
+    ARGS+=(--cpu-timing-exclude-plots)
+fi
 if [ "${SAVE_NC}" = "1" ]; then
     ARGS+=(--save-nc)
 fi
 if [ "${ENABLE_EVAL}" = "1" ]; then
     ARGS+=(--enable-eval)
+fi
+if [ -n "${EVAL_MODES}" ]; then
+    ARGS+=(--eval-modes ${EVAL_MODES})
+fi
+if [ -n "${FIDELITY_MAX_DEG}" ]; then
+    ARGS+=(--fidelity-max-deg "${FIDELITY_MAX_DEG}")
+fi
+if [ "${AUTO_MULTIGRID}" = "1" ]; then
+    ARGS+=(--auto-multigrid)
 fi
 if [ "${SAVE_DIFF}" = "1" ]; then
     ARGS+=(--save-diff)
@@ -225,8 +261,21 @@ fi
 
 ARGS+=(--parallel-mode "${PARALLEL_MODE}")
 
-echo "[info] parallel_mode=${PARALLEL_MODE}  world_size=${WORLD_SIZE}"
-echo "[info] ENV snapshot: MODELS=${MODELS} DATA_SOURCE=${DATA_SOURCE} DATE_RANGE=${DATE_RANGE} INIT_HOUR=${INIT_HOUR} LEAD_STEP=${LEAD_STEP} MAX_LEAD=${MAX_LEAD} WORLD_SIZE=${WORLD_SIZE} PARALLEL_MODE=${PARALLEL_MODE} ENABLE_EVAL=${ENABLE_EVAL}"
+# ---- 真值缓存参数 ----
+ARGS+=(--truth-cache-mode "${TRUTH_CACHE_MODE}")
+ARGS+=(--truth-cache-budget-ratio "${TRUTH_CACHE_BUDGET_RATIO}")
+ARGS+=(--truth-cache-safety-factor "${TRUTH_CACHE_SAFETY_FACTOR}")
+if [ "${KEEP_TRUTH_CACHE}" = "1" ]; then
+    ARGS+=(--keep-truth-cache)
+fi
+
+echo "[info] parallel_mode=${PARALLEL_MODE}  world_size=${WORLD_SIZE}  master_port=${MASTER_PORT}"
+echo "[info] ENV snapshot: MODELS=${MODELS} DATA_SOURCE=${DATA_SOURCE} DATE_RANGE=${DATE_RANGE} INIT_HOUR=${INIT_HOUR} LEAD_STEP=${LEAD_STEP} MAX_LEAD=${MAX_LEAD} WORLD_SIZE=${WORLD_SIZE} PARALLEL_MODE=${PARALLEL_MODE} ENABLE_EVAL=${ENABLE_EVAL} CPU_TIMING_EXCLUDE_PLOTS=${CPU_TIMING_EXCLUDE_PLOTS}"
+if [ -n "${GC_BLOB_INPUT_MODE}" ]; then
+  export GC_BLOB_INPUT_MODE
+  echo "[info] GC_BLOB_INPUT_MODE=${GC_BLOB_INPUT_MODE}"
+fi
+_emit_sbatch_repro_rolling
 echo "[info] CMD(base): python ${PY_ENTRY} ${ARGS[*]}"
 echo "[info] 开始时间: $(date)"
 
@@ -234,7 +283,7 @@ if [ "${WORLD_SIZE}" -gt "1" ]; then
     echo "[info] 多进程模式: WORLD_SIZE=${WORLD_SIZE}  PARALLEL_MODE=${PARALLEL_MODE}"
     torchrun \
         --nproc_per_node="${WORLD_SIZE}" \
-        --master_port=29500 \
+        --master_port="${MASTER_PORT}" \
         "${PY_ENTRY}" "${ARGS[@]}"
 else
     python "${PY_ENTRY}" "${ARGS[@]}"

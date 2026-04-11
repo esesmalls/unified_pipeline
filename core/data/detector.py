@@ -2,7 +2,7 @@
 数据格式自动探测器。
 
 检查规则（优先级从高到低）：
-1. 若 {root}/pressure/pressure/ 子目录存在且含 *_pressure.nc → gundong_20260324
+1. 若 {root}/pressure/pressure/ 或 {root}/pressure/ 下含 *_pressure.nc → gundong_20260324
 2. 若 {root}/ 直接含 *_pressure.nc 或 {root}/YYYY_MM/*_pressure.nc → era5_flat
 3. 否则抛出 ValueError
 """
@@ -20,14 +20,24 @@ _FORMAT_MAP = {
     "gundong_20260324": GunDongAdapter,
 }
 
+try:
+    from .ecmwf_init_grib_adapter import ECMWFInitGribAdapter
+    _FORMAT_MAP["ecmwf_init_grib"] = ECMWFInitGribAdapter
+except ImportError:
+    pass  # pygrib not installed; format unavailable but won't break others
+
 
 def detect_format(root: Path) -> str:
     """返回格式名称字符串。"""
     root = Path(root)
-    # GunDong 特征：pressure/pressure/ 子目录
-    pdir = root / "pressure" / "pressure"
-    if pdir.is_dir() and any(pdir.glob("*_pressure.nc")):
-        return "gundong_20260324"
+    # GunDong：嵌套 pressure/pressure/ 或扁平 pressure/
+    for pdir in (root / "pressure" / "pressure", root / "pressure"):
+        if pdir.is_dir() and any(pdir.glob("*_pressure.nc")):
+            return "gundong_20260324"
+
+    # ECMWF/GFS init GRIB1：G_*_fh_*.grib1
+    if any(root.glob("G_*_fh_*.grib1")):
+        return "ecmwf_init_grib"
 
     # ERA5 flat：根目录或月份子目录含 *_pressure.nc
     if any(root.glob("*_pressure.nc")):
@@ -38,7 +48,7 @@ def detect_format(root: Path) -> str:
     raise ValueError(
         f"无法自动识别 {root} 的数据格式。\n"
         "请在 config/data.yaml 中明确设置 format 字段，\n"
-        "或通过 --data-format 参数指定（era5_flat | gundong_20260324）。"
+        "或通过 --data-format 参数指定（era5_flat | gundong_20260324 | ecmwf_init_grib）。"
     )
 
 

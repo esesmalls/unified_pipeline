@@ -97,6 +97,51 @@ def compute_step_metrics(
     return diff.astype(np.float32), results
 
 
+def compute_step_metrics_masked(
+    pred: np.ndarray,
+    truth: np.ndarray,
+    lats: np.ndarray,
+    mask: np.ndarray,
+    metrics: Optional[List[str]] = None,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """
+    在 mask==True 的格点上做余弦纬度加权 W-MAE / W-RMSE（分母为有效点的权重和）。
+
+    pred/truth/mask: 同形状 (H, W)；truth 可在无效点填 nan。
+    """
+    if metrics is None:
+        metrics = list(METRIC_FUNCS.keys())
+
+    pred64 = np.asarray(pred, dtype=np.float64)
+    truth64 = np.asarray(truth, dtype=np.float64)
+    diff = pred64 - truth64
+    m = np.asarray(mask, dtype=np.float64)
+    if diff.shape != m.shape:
+        raise ValueError(f"mask shape {m.shape} != field shape {diff.shape}")
+
+    w2d, _ = _make_lat_weights(lats)
+    w_bc = np.broadcast_to(w2d, diff.shape)
+    wm = w_bc * m
+    den = float(np.sum(wm))
+    if den <= 0.0:
+        return diff.astype(np.float32), {name: float("nan") for name in metrics}
+
+    results: Dict[str, float] = {}
+    for name in metrics:
+        if name == "W-MAE":
+            results[name] = float(np.sum(np.abs(diff) * wm) / den)
+        elif name == "W-RMSE":
+            results[name] = float(np.sqrt(np.sum((diff ** 2) * wm) / den))
+        elif name in METRIC_FUNCS:
+            raise ValueError(
+                f"指标 '{name}' 未实现 masked 版本；支持: W-MAE, W-RMSE",
+            )
+        else:
+            raise ValueError(f"未知指标 '{name}'")
+
+    return diff.astype(np.float32), results
+
+
 def register_metric(name: str, func: Callable) -> None:
     """注册自定义指标函数。func(diff, w2d, sum_w) -> float"""
     METRIC_FUNCS[name] = func

@@ -25,12 +25,20 @@ def _get_model_classes() -> Dict[str, type]:
     from .fengwu_model import FengWuModel
     from .fuxi_model import FuXiModel
     from .graphcast_model import GraphCastModel
+    from .graphcast_official_operational_model import (
+        GraphCastOfficialOperationalModel,
+    )
+    from .graphcast_official_operational_stepwise_model import (
+        GraphCastOfficialStepwiseModel,
+    )
     return {
         "pangu": PanguModel,
         "fengwu": FengWuModel,
         "fuxi": FuXiModel,
         "graphcast": GraphCastModel,
         "graphcast_cs": GraphCastModel,
+        "graphcast_official_operational": GraphCastOfficialOperationalModel,
+        "graphcast_official_operational_stepwise": GraphCastOfficialStepwiseModel,
     }
 
 
