@@ -78,6 +78,8 @@ class GraphCastOfficialStepwiseModel(WeatherModel):
         self._params = None
         self._hk_state: dict = {}
         self._stats: Dict[str, xr.Dataset] = {}
+        self._fallback_recorder = None
+        self._enabled_optional_channels: List[str] = []
 
     # ------------------------------------------------------------------
     # WeatherModel interface
@@ -370,6 +372,7 @@ class GraphCastOfficialStepwiseModel(WeatherModel):
             "lon", np.arange(0.0, 360.0, 0.25, dtype=np.float32)
         )
         blob: Dict[str, np.ndarray] = {"lat": lat, "lon": lon}
+        missing_surface: List[str] = []
 
         for xr_key, blob_key in self._SURFACE_KEYS.items():
             if xr_key in predictions:
@@ -379,5 +382,19 @@ class GraphCastOfficialStepwiseModel(WeatherModel):
                 if "time" in da.dims:
                     da = da.isel(time=0)
                 blob[blob_key] = np.asarray(da, dtype=np.float32)
+            else:
+                missing_surface.append(xr_key)
+
+        if missing_surface:
+            if self._fallback_recorder is not None:
+                for ch in missing_surface:
+                    self._fallback_recorder(
+                        channel=ch,
+                        strategy="error",
+                        detail="stepwise predictions missing required surface variable",
+                    )
+            raise RuntimeError(
+                f"GC_Stepwise missing required prediction channels: {missing_surface}"
+            )
 
         return blob

@@ -30,6 +30,10 @@ These rules apply to work under this repo’s `scripts/` and Slurm submission pa
 13. Prefer **extending** existing `scripts/submit_*.sh` (environment variables, documented in `README.md`) over adding new shell wrappers.
 14. Add a **new** `scripts/*.sh` only when introducing a genuinely new Slurm entrypoint or cluster workflow that cannot map cleanly onto `submit_verify.sh`, `submit_rolling.sh`, or `submit_evaluate.sh`; in that case, document the script and when to use it in `README.md`.
 
+## Local Slurm / hardware logs (this repo)
+
+15. **Job stdout/stderr and hardware traces** are often written under `unified_pipeline/logs/` (e.g. `rolling_<JOBID>.out`, `evaluate_<JOBID>.out`, `hardware_<JOBID>_*.log`). That directory is **gitignored**; tools may omit it from listings. When diagnosing a cluster run or answering questions about a job id, **read or `grep` those files directly** before assuming logs are unavailable.
+
 ## Commit and Push Pattern
 
 1. `git switch -c feature/<topic>`

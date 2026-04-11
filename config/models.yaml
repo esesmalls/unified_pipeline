@@ -93,13 +93,19 @@ models:
     param_file: "graphcast_params_GraphCast_operational - ERA5-HRES 1979-2021 - resolution 0.25 - pressure levels 13 - mesh 2to6 - precipitation output only.npz"
     gundong_root: "/public/share/aciwgvx1jd/20260324"
     embed_python: "${ZK_ROOT}/.e2s_official_embed/bin/python"
+    # 默认由 rolling_pipeline 运行时注入为: <output_root>/_gc_oper_cache
+    # 仅当 lock_rollout_cache_dir=true 时，才固定使用这里配置的目录。
     rollout_cache_dir: "/public/share/aciwgvx1jd/gc_oper_rollout_cache"
+    lock_rollout_cache_dir: false
+    # full_window: 读取[-step, 0, +6h..+max+step]可用blob，不足处forward_reuse
+    # init_only:   仅读取[-step, 0]初始化blob，后续时次不再尝试读取（默认）
+    rollout_blob_input_mode: "init_only"
     step_hours: 6
     max_lead_hours: 240
     surface_channels: ["u10", "v10", "t2m", "msl"]
 
   graphcast_official_operational_stepwise:
-    enabled: true
+    enabled: false   # 默认不纳入 MODELS=all；需单独跑时设 MODELS=..._stepwise 或改 true
     type: jax_official_stepwise
     display_name: "GC_Stepwise"
     assets_root: "${ZK_ROOT}/graphcast_official_assets"

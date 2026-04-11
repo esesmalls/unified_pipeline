@@ -16,3 +16,6 @@ results/
 *.npz
 *.h5
 *.hdf5
+
+# Cursor local plans (not part of repo source)
+.cursor/plans/

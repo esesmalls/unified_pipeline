@@ -8,7 +8,7 @@ Usage (after both models have completed rolling inference for the same init_tag)
   python scripts/compare_stepwise_vs_cache.py \
       --init-tag 20260303T12 \
       --baseline-dir /public/share/aciwgvx1jd/gc_oper_rollout_cache/GraphCast_official/ERA5_6H \
-      --stepwise-dir /public/share/aciwgvx1jd/GunDong_Infer_result_12h/GC_Stepwise/ERA5_6H
+      --stepwise-dir /public/share/aciwgvx1jd/LYQ/gundong/GunDong_Infer_result_12h_stepwise/GC_Stepwise/ERA5_6H
 
 Prints per-variable / per-step max-abs-diff, RMSE, and overall statistics.
 """

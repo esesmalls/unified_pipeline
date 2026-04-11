@@ -1,5 +1,5 @@
 """
-统一流水线路径锚点。
+统一流水线路径锚点，让所有脚本都能用同一套坐标系找到代码、权重和配置文件。
 
 本目录：ZK_Models/unified_pipeline（代码 + config）
 ZK_MODELS_ROOT：上级 ZK_Models（ONNX 权重 pangu/fengwu/fuxi 等仍放于此）

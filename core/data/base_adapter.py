@@ -13,6 +13,7 @@
         "pangu_t":      np.ndarray (13, H, W) float32,
         "pangu_u":      np.ndarray (13, H, W) float32,
         "pangu_v":      np.ndarray (13, H, W) float32,
+        "pangu_w":      np.ndarray (13, H, W) float32,      # optional, vertical velocity
         "pressure_src": np.ndarray (N,) float32,        # original levels
         "lat":          np.ndarray (H,) float32,        # N→S, 90…-90
         "lon":          np.ndarray (W,) float32,        # 0…359.75
