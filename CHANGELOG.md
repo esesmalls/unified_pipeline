@@ -81,15 +81,16 @@ This format is inspired by Keep a Changelog and adapted for this repository.
 
 - **版本**：`v0.3.0`
 - **发布日期**：2026-04-11
-- **主开发分支**：`feature/graphcast-official-operational`
-- **合并至 `main`**：发起并合并 PR 后，于此处填写 **PR 链接** 或 **merge commit SHA**。
-- **打标签（可选）**：合并后 `git tag -a v0.3.0 -m 'Business rolling inference release'` 并 `git push origin v0.3.0`。
+- **主开发分支**：`feature/graphcast-official-operational`（已合并）
+- **合并至 `main`**：merge commit [`e8db910`](https://github.com/esesmalls/unified_pipeline/commit/e8db9102904f504731de6f7d2f88c899d85b195d)（`将当前的业务化脚本库同步入主分支`）。GitHub 上可在仓库 **Pull requests → Closed** 查看对应合并 PR。
+- **Git 标签**：`v0.3.0` 指向 **`main` 上含本条目与合并说明的提交**（合并完成后由维护者打标签并 `git push origin v0.3.0`）。
 
 ### Related commits
 
-相对 **`main` 祖先提交 `9d4e1db`** 起，本版本分支包含（从新到旧）：
+相对 **`main` 祖先提交 `9d4e1db`** 起，本版本分支包含（从新到旧）；**并入 `main` 的合并提交**：
 
 ```
+e8db910 将当前的业务化脚本库同步入主分支
 b9dda64 feat(data,metrics,models): optional pangu_w; audit hooks; masked metrics; stepwise validation
 41fce00 fix(timing): add init_state_s to stage_totals, label as wall time
 cba1b61 feat(timing): 始终开启逐段计时统计，推理结束输出 [stage_totals]
